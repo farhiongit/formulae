@@ -1,3 +1,7 @@
+/*
+ * formulae: a recursive interpretor of formulae (à la Excel)
+ * Copyright (C) 2017 L. Farhi (lrspam at sfr.fr)
+ */
 #define _GNU_SOURCE
 
 #include <strings.h>
