@@ -1,3 +1,4 @@
+
 /*
  * formulae: a recursive interpretor of formulae (à la Excel)
  * Copyright (C) 2017 L. Farhi (lrspam at sfr.fr)
@@ -66,7 +67,7 @@ typedef struct list_of_f_0_arg
 typedef struct list_of_f_1_arg
 {
   char *name;
-  double (*value) (double);  //TODO: change it to value_t
+  double (*value) (double);     //TODO: change it to value_t
 
   struct list_of_f_1_arg *next;
 } f1arg_t;
@@ -74,7 +75,7 @@ typedef struct list_of_f_1_arg
 typedef struct list_of_f_2_arg
 {
   char *name;
-  double (*value) (double, double);  //TODO: change it to value_t
+  double (*value) (double, double);     //TODO: change it to value_t
 
   struct list_of_f_2_arg *next;
 } f2args_t;
@@ -82,7 +83,7 @@ typedef struct list_of_f_2_arg
 typedef struct list_of_f_3_arg
 {
   char *name;
-  double (*value) (double, double, double);  //TODO: change it to value_t
+  double (*value) (double, double, double);     //TODO: change it to value_t
 
   struct list_of_f_3_arg *next;
 } f3args_t;
@@ -114,7 +115,7 @@ typedef struct list_of_dependencies
 
 typedef struct list_of_alerts
 {
-  double min_value, max_value;
+  double min_value, max_value;  //TODO (date_time): change it to value_t
   char *message;
 
   struct list_of_alerts *next;
@@ -130,8 +131,8 @@ typedef struct list_of_formulae
   int circular_dependencies;
   alert_t *alerts;
   value_t value;
-  double *min_range;  //TODO (date_time): change it to value_t
-  double *max_range;  //TODO (date_time): change it to value_t
+  double *min_range;            //TODO (date_time): change it to value_t
+  double *max_range;            //TODO (date_time): change it to value_t
   char *pos;
   char *previous_pos;
   int notify_change;
@@ -222,8 +223,8 @@ typedef struct token
 /**************************************************************
 *                     GLOBALS CONSTANTS                       *
 **************************************************************/
-static const value_t ZERO = { NUMBER, {0.} };
-static const value_t ONE = { NUMBER, {1.} };
+static const value_t ZERO = { INTEGER, {0L} };
+static const value_t ONE = { INTEGER, {1L} };
 static const value_t UNDEF = { UNDEFINED, {0.} };
 
 /**************************************************************
@@ -245,8 +246,10 @@ mystrdup (const char *s)
     return 0;
 
   char *const ret = malloc ((strlen (s) + 1) * sizeof (*ret));
+
   CHECK_ALLOC (ret);
   char *str;
+
   for (str = ret; *s; s++, str++)
     *str = *s;
   *str = 0;
@@ -264,8 +267,10 @@ mystrndup (const char *s, size_t n)
     n = strlen (s);
 
   char *const ret = malloc ((n + 1) * sizeof (*ret));
+
   CHECK_ALLOC (ret);
   char *str;
+
   for (str = ret; *s && n; s++, str++, n--)
     *str = *s;
   *str = 0;
@@ -315,8 +320,19 @@ value_t
 MAKE_NUMBER (double v)
 {
   value_t ret;
+
   ret.type = NUMBER;
   GET_NUMBER (ret) = v;
+  return ret;
+}
+
+value_t
+MAKE_INTEGER (long int v)
+{
+  value_t ret;
+
+  ret.type = INTEGER;
+  GET_INTEGER (ret) = v;
   return ret;
 }
 
@@ -324,6 +340,7 @@ value_t
 MAKE_DATE_TIME (struct tm v)
 {
   value_t ret;
+
   ret.type = DATE_TIME;
   GET_DATE_TIME (ret) = v;
   return ret;
@@ -336,6 +353,7 @@ __MAKE_STRING (char *v, int allocate)
     return UNDEF;
 
   value_t ret;
+
   ret.type = STRING;
   if (allocate)
   {
@@ -369,6 +387,7 @@ static value_t
 value_dup (value_t v)
 {
   value_t ret = v;
+
   if (IS_STRING (v))
   {
     GET_STRING (ret) = mystrdup (GET_STRING (v));
@@ -386,6 +405,14 @@ value_cmp (value_t a, value_t b)
     return 1;
   else if (IS_NUMBER (a))
     return (GET_NUMBER (a) > GET_NUMBER (b) ? 1 : (GET_NUMBER (a) < GET_NUMBER (b) ? -1 : 0));
+  else if (IS_INTEGER (a))
+    return (GET_INTEGER (a) > GET_INTEGER (b) ? 1 : (GET_INTEGER (a) < GET_INTEGER (b) ? -1 : 0));
+  else if (IS_DATE_TIME (a))
+  {
+    long int d = tm_diffseconds (GET_DATE_TIME (a), GET_DATE_TIME (b));
+
+    return d > 0 ? 1 : d < 0 ? -1 : 0;
+  }
   else if (IS_STRING (a))
     return strcmp (GET_STRING (a), GET_STRING (b));
 
@@ -404,6 +431,7 @@ formula_msg_handler_add (formula_msg_handler handler)
       return;
 
   formula_msg_handler_t *const pev = malloc (sizeof (*pev));
+
   CHECK_ALLOC (pev);
   pev->handler = handler;
   pev->next = 0;
@@ -413,6 +441,7 @@ formula_msg_handler_add (formula_msg_handler handler)
   else
   {
     formula_msg_handler_t *ptr;
+
     for (ptr = formulaMsgHandlers; ptr->next != 0; ptr = ptr->next)
       /* nothing */ ;
     ptr->next = pev;
@@ -453,8 +482,10 @@ formula_on_message (const char *engine_name,
     return;
 
   va_list ap;
+
   va_start (ap, fmt);
   int length = vsnprintf (0, 0, fmt, ap);
+
   if (length < 0)
     return;
   else
@@ -462,12 +493,14 @@ formula_on_message (const char *engine_name,
   va_end (ap);
 
   char *msg = malloc (length * sizeof (char));
+
   CHECK_ALLOC (msg);
   va_start (ap, fmt);
   vsnprintf (msg, length, fmt, ap);
   va_end (ap);
 
   formula_msg_handler_t *ptr = formulaMsgHandlers;
+
   for (ptr = formulaMsgHandlers; ptr != 0; ptr = ptr->next)
     if (ptr->handler)
       (ptr->handler) (engine_name, object_name, msg, severity, depth);
@@ -486,6 +519,7 @@ formula_changed_handler_add (formula_changed_handler handler)
       return;
 
   formula_changed_handler_t *const pev = malloc (sizeof (*pev));
+
   CHECK_ALLOC (pev);
   pev->handler = handler;
   pev->next = 0;
@@ -495,6 +529,7 @@ formula_changed_handler_add (formula_changed_handler handler)
   else
   {
     formula_changed_handler_t *ptr;
+
     for (ptr = formulaOnChangeHandlers; ptr->next != 0; ptr = ptr->next)
       /* nothing */ ;
     ptr->next = pev;
@@ -534,6 +569,7 @@ formula_on_change (const char *engine_name, const char *variable_name, value_t v
     return;
 
   formula_changed_handler_t *ptr = formulaOnChangeHandlers;
+
   for (ptr = formulaOnChangeHandlers; ptr != 0; ptr = ptr->next)
     if (ptr->handler)
       (ptr->handler) (engine_name, variable_name, value);
@@ -542,6 +578,7 @@ formula_on_change (const char *engine_name, const char *variable_name, value_t v
 /**************************************************************
 *                       FORMULAE PARSER                       *
 **************************************************************/
+
 /* Grammar:
 %tokens%
 
@@ -629,11 +666,13 @@ isid (const char *nptr, char **endptr)
 static void fake_localtimeinUTC (struct tm *d);
 
 /* LEXER */
+
 /* Token factory */
 static token_t
 get_token (formula_t * const expr)
 {
   token_t token;
+
   token.type = NONE;
   if (!expr || !expr->pos)
     return token;
@@ -645,6 +684,7 @@ get_token (formula_t * const expr)
     expr->pos++;
 
   char ch;
+
   switch (ch = *(expr->pos))
   {
     case '\0':
@@ -688,6 +728,7 @@ get_token (formula_t * const expr)
     case '"':
     {
       size_t length = 0;
+
       while (*((expr->pos) + length + 1) && *((expr->pos) + length + 1) != '"')
         length++;
 
@@ -697,6 +738,7 @@ get_token (formula_t * const expr)
       {
         token.type = VALUE;
         char *v = malloc ((length + 1) * sizeof (*v));
+
         CHECK_ALLOC (v);
         if (length)
           strncpy (v, expr->pos + 1, length);
@@ -711,6 +753,7 @@ get_token (formula_t * const expr)
       // Try to read a date
     {
       size_t length = 0;
+
       while (*((expr->pos) + length + 1) && *((expr->pos) + length + 1) != '\'')
         length++;
 
@@ -719,19 +762,23 @@ get_token (formula_t * const expr)
       else
       {
         char *s = strndup (expr->pos + 1, length);
+
         CHECK_ALLOC (s);
 
         struct tm v;
+
         tm_maketoday (&v);
 
         fake_localtimeinUTC (&v);
 
         char *saveptr, *tok;
 
-        if ((tok = strtok_r (s, " ", &saveptr)) == 0 || tm_setdatefromstring (&v, tok) != TM_OK)
-          formula_on_message (expr->engine->name, expr->variable_name, MSG_ERROR, 0, "'%s': Incorrect date %s.", expr->formula, s);
+        if ((tok = strtok_r (s, " \t", &saveptr)) == 0 || tm_setdatefromstring (&v, tok) != TM_OK)
+          formula_on_message (expr->engine->name, expr->variable_name, MSG_ERROR, 0, "'%s': Incorrect date %s.",
+                              expr->formula, s);
         else if ((tok = strtok_r (0, " ", &saveptr)) != 0 && tm_settimefromstring (&v, tok) != TM_OK)
-          formula_on_message (expr->engine->name, expr->variable_name, MSG_ERROR, 0, "'%s': Incorrect date %s.", expr->formula, s);
+          formula_on_message (expr->engine->name, expr->variable_name, MSG_ERROR, 0, "'%s': Incorrect date %s.",
+                              expr->formula, s);
         else
         {
           expr->pos = (expr->pos) + length + 2;
@@ -746,24 +793,36 @@ get_token (formula_t * const expr)
       break;
     default:
     {
+      // Try to read an integer
+      char *endl = 0;
+      long int valuel = strtol (expr->pos, &endl, 0);
+
       // Try to read a number
-      char *endptr = 0;
-      double value = strtod (expr->pos, &endptr);
-      if (endptr == expr->pos)
+      char *endd = 0;
+      double valued = strtod (expr->pos, &endd);
+
+      if (endd == expr->pos)
       {                         // it's a variable name
-        if (isid (expr->pos, &endptr))
+        if (isid (expr->pos, &endd))
         {
           token.type = IDENTIFIER;
           token.attribute.id.begin = expr->pos;
-          token.attribute.id.end = expr->pos = endptr;
+          token.attribute.id.end = expr->pos = endd;
           return token;
         }
       }
-      else
+      else if (endd > endl)
       {                         // it's a number
-        expr->pos = endptr;
+        expr->pos = endd;
         token.type = VALUE;
-        token.attribute.value = MAKE_NUMBER (value);
+        token.attribute.value = MAKE_NUMBER (valued);
+        return token;
+      }
+      else
+      {                         // it's an integer
+        expr->pos = endl;
+        token.type = VALUE;
+        token.attribute.value = MAKE_INTEGER (valuel);
         return token;
       }
       break;
@@ -792,6 +851,7 @@ static value_t
 parse_primary (formula_t * const expr)
 {
   token_t tok = get_token (expr);
+
   if (!expr || !expr->pos)
   {
     if (tok.type == VALUE)
@@ -807,11 +867,17 @@ parse_primary (formula_t * const expr)
     case MINUS:
     {
       value_t ret = parse_primary (expr);
+
       if (IS_VALUED (ret))
       {
         if (IS_NUMBER (ret) && IS_VALUED (expr->value))
         {
           GET_NUMBER (ret) = -GET_NUMBER (ret);
+          return ret;
+        }
+        else if (IS_INTEGER (ret) && IS_VALUED (expr->value))
+        {
+          GET_INTEGER (ret) = -GET_INTEGER (ret);
           return ret;
         }
         else
@@ -832,6 +898,7 @@ parse_primary (formula_t * const expr)
     {
       value_t value = parse_comparison (expr);
       token_t t = get_token (expr);
+
       if (t.type != RHPAREN)
       {
         if (t.type == VALUE)
@@ -848,6 +915,7 @@ parse_primary (formula_t * const expr)
     {
       value_t value = parse_comparison (expr);
       token_t t = get_token (expr);
+
       if (t.type != RHBRACKET)
       {
         if (t.type == VALUE)
@@ -863,6 +931,7 @@ parse_primary (formula_t * const expr)
     case IDENTIFIER:
     {
       token_t tpar = get_token (expr);
+
       if (tpar.type == LHPAREN) // An identifier followed by a left-hand parenthesis should be a function name.
       {
         int found = 0;
@@ -880,6 +949,7 @@ parse_primary (formula_t * const expr)
           do
           {
             value_t arg = parse_comparison (expr);
+
             nbArgs++;
             args = realloc (args, nbArgs * sizeof (*args));
             CHECK_ALLOC (args);
@@ -898,7 +968,7 @@ parse_primary (formula_t * const expr)
         else if (nbArgs == 1 &&
                  strlen (GET_VALUE_FUNCTION) == tok.attribute.id.end - tok.attribute.id.begin &&
                  !strncmp (GET_VALUE_FUNCTION, tok.attribute.id.begin, tok.attribute.id.end - tok.attribute.id.begin))
-        {  // Special uniary function 'value'
+        {                       // Special uniary function 'value'
           found = 1;
           if (!IS_VALUED (args[0]))
             /* nothing */ ;
@@ -910,6 +980,7 @@ parse_primary (formula_t * const expr)
             int go_on = 1;
 
             char *endptr = 0;
+
             if (!isid (GET_STRING (args[0]), &endptr) || *endptr != 0)
             {
               formula_on_message (expr->engine->name, expr->variable_name, MSG_WARNING, 0,
@@ -932,6 +1003,7 @@ parse_primary (formula_t * const expr)
             if (go_on)
             {
               dependency_t *dep;
+
               for (dep = expr->dependencies;
                    dep && (strlen (dep->variable_name) != strlen (GET_STRING (args[0]))
                            || strcmp (dep->variable_name, GET_STRING (args[0]))); dep = dep->next)
@@ -939,6 +1011,7 @@ parse_primary (formula_t * const expr)
               if (!dep)
               {
                 dependency_t *new_dep = malloc (sizeof (*new_dep));
+
                 CHECK_ALLOC (new_dep);
                 ASSERT (new_dep->variable_name = mystrdup (GET_STRING (args[0])), 0);
                 new_dep->next = expr->dependencies;
@@ -960,6 +1033,7 @@ parse_primary (formula_t * const expr)
         else
         {
           fnargs_t *fn = 0;
+
           for (fn = expr->engine->fnargs;
                fn &&
                (strlen (fn->name) != tok.attribute.id.end - tok.attribute.id.begin ||
@@ -1003,6 +1077,7 @@ parse_primary (formula_t * const expr)
               case 0:
               {
                 f0arg_t *f0 = 0;
+
                 for (f0 = expr->engine->f0args;
                      f0 && (strlen (f0->name) != tok.attribute.id.end - tok.attribute.id.begin ||
                             strncmp (f0->name, tok.attribute.id.begin, tok.attribute.id.end - tok.attribute.id.begin));
@@ -1027,6 +1102,7 @@ parse_primary (formula_t * const expr)
               case 1:
               {
                 f1arg_t *f1 = 0;
+
                 for (f1 = expr->engine->f1args;
                      f1 && (strlen (f1->name) != tok.attribute.id.end - tok.attribute.id.begin ||
                             strncmp (f1->name, tok.attribute.id.begin, tok.attribute.id.end - tok.attribute.id.begin));
@@ -1058,6 +1134,7 @@ parse_primary (formula_t * const expr)
               case 2:
               {
                 f2args_t *f2 = 0;
+
                 for (f2 = expr->engine->f2args;
                      f2 && (strlen (f2->name) != tok.attribute.id.end - tok.attribute.id.begin ||
                             strncmp (f2->name, tok.attribute.id.begin, tok.attribute.id.end - tok.attribute.id.begin));
@@ -1089,6 +1166,7 @@ parse_primary (formula_t * const expr)
               case 3:
               {
                 f3args_t *f3 = 0;
+
                 for (f3 = expr->engine->f3args;
                      f3 && (strlen (f3->name) != tok.attribute.id.end - tok.attribute.id.begin ||
                             strncmp (f3->name, tok.attribute.id.begin, tok.attribute.id.end - tok.attribute.id.begin));
@@ -1123,6 +1201,7 @@ parse_primary (formula_t * const expr)
             if (!found)
             {
               char *fname = mystrndup (tok.attribute.id.begin, tok.attribute.id.end - tok.attribute.id.begin);
+
               formula_on_message (expr->engine->name, expr->variable_name, MSG_ERROR,
                                   0, "'%s': Unknown function name %s with %i arguments.", expr->formula, fname, nbArgs);
               free (fname);
@@ -1154,6 +1233,7 @@ parse_primary (formula_t * const expr)
 
         // Add identifier to dependencies
         dependency_t *dep;
+
         for (dep = expr->dependencies;
              dep && (strlen (dep->variable_name) != tok.attribute.id.end - tok.attribute.id.begin ||
                      strncmp (dep->variable_name, tok.attribute.id.begin,
@@ -1162,6 +1242,7 @@ parse_primary (formula_t * const expr)
         if (!dep)
         {
           dependency_t *new_dep = malloc (sizeof (*new_dep));
+
           CHECK_ALLOC (new_dep);
           ASSERT (new_dep->variable_name =
                   mystrndup (tok.attribute.id.begin, tok.attribute.id.end - tok.attribute.id.begin), 0);
@@ -1198,6 +1279,7 @@ static value_t
 parse_term (formula_t * const expr)
 {
   value_t left = parse_primary (expr);
+
   if (!expr || !expr->pos)
   {
     value_free (left);
@@ -1205,20 +1287,22 @@ parse_term (formula_t * const expr)
   }
 
   for (;;)                      // a term is actually a succession of primaries
-                                // Term = Primary
-                                //      | Term '/' Primary
-                                //      | Term '*' Primary ;
+    // Term = Primary
+    //      | Term '/' Primary
+    //      | Term '*' Primary ;
 
   {
     token_t token = get_token (expr);
+
     switch (token.type)
     {
       case MULTIPLY:
       {
         value_t right = parse_primary (expr);
+
         if (IS_VALUED (expr->value))
         {
-          if (!IS_NUMBER (left) || !IS_NUMBER (right))
+          if ((!IS_NUMBER (left) && !IS_INTEGER (left)) || (!IS_NUMBER (right) && !IS_INTEGER (right)))
           {
             formula_on_message (expr->engine->name, expr->formula, MSG_WARNING, 0, "'%s': Operation not allowed.",
                                 expr->formula);
@@ -1226,22 +1310,47 @@ parse_term (formula_t * const expr)
             value_free (left);
             left = UNDEF;
           }
-          else if (GET_NUMBER (right) == 0.)
+          else if (IS_INTEGER (left) && IS_INTEGER (right))
           {
-            value_free (left);
-            left = ZERO;
+            // TODO: check for LONG_MIN and LONG_MAX overflow.
+            int overflow = 0;
+
+            if (overflow)
+            {
+              formula_on_message (expr->engine->name, expr->formula, MSG_WARNING, 0, "'%s': Out of range (%li*%li).",
+                                  expr->formula, GET_INTEGER (left), GET_INTEGER (right));
+              expr->value = UNDEF;
+              value_free (left);
+              left = UNDEF;
+            }
+            else
+              GET_INTEGER (left) *= GET_INTEGER (right);
           }
-          else if (GET_NUMBER (left) == 0.)
-            /* nothing, left unchanged ! */ ;
-          else if (isnormal (GET_NUMBER (left) * GET_NUMBER (right)))
-            GET_NUMBER (left) *= GET_NUMBER (right);
           else
           {
-            formula_on_message (expr->engine->name, expr->formula, MSG_WARNING, 0, "'%s': Out of range (%g*%g).",
-                                expr->formula, GET_NUMBER (left), GET_NUMBER (right));
-            expr->value = UNDEF;
-            value_free (left);
-            left = UNDEF;
+            double l = IS_INTEGER (left) ? GET_INTEGER (left) : GET_NUMBER (left);
+            double r = IS_INTEGER (right) ? GET_INTEGER (right) : GET_NUMBER (right);
+
+            if (l == 0. || r == 0.)
+            {
+              value_free (left);
+              left.type = NUMBER;
+              GET_NUMBER (left) = 0.;
+            }
+            else if (isnormal (l * r))
+            {
+              value_free (left);
+              left.type = NUMBER;
+              GET_NUMBER (left) = l * r;
+            }
+            else
+            {
+              formula_on_message (expr->engine->name, expr->formula, MSG_WARNING, 0, "'%s': Out of range (%g*%g).",
+                                  expr->formula, GET_NUMBER (left), GET_NUMBER (right));
+              expr->value = UNDEF;
+              value_free (left);
+              left = UNDEF;
+            }
           }
         }
         else if (IS_VALUED (left))
@@ -1255,9 +1364,10 @@ parse_term (formula_t * const expr)
       case DIVIDE:
       {
         value_t right = parse_primary (expr);
+
         if (IS_VALUED (expr->value))
         {
-          if (!IS_NUMBER (left) || !IS_NUMBER (right))
+          if ((!IS_NUMBER (left) && !IS_INTEGER (left)) || (!IS_NUMBER (right) && !IS_INTEGER (right)))
           {
             formula_on_message (expr->engine->name, expr->formula, MSG_WARNING, 0, "'%s': Operation not allowed.",
                                 expr->formula);
@@ -1265,25 +1375,72 @@ parse_term (formula_t * const expr)
             value_free (left);
             left = UNDEF;
           }
-          else if (GET_NUMBER (right) == 0.)
+          else if (IS_INTEGER (left) && IS_INTEGER (right))
           {
-            formula_on_message (expr->engine->name, expr->formula, MSG_WARNING, 0, "'%s': Division by zero.",
-                                expr->formula);
-            expr->value = UNDEF;
-            value_free (left);
-            left = UNDEF;
+            if (GET_INTEGER (right) == 0L)
+            {
+              formula_on_message (expr->engine->name, expr->formula, MSG_WARNING, 0, "'%s': Division by zero.",
+                                  expr->formula);
+              expr->value = UNDEF;
+              value_free (left);
+              left = UNDEF;
+            }
+            else if (GET_INTEGER (left) % GET_INTEGER (right))
+            {
+              value_free (left);
+              left.type = NUMBER;
+              GET_NUMBER (left) = (1. * GET_INTEGER (left)) / (1. * GET_INTEGER (right));
+            }
+            else
+            {
+              int overflow = 0;
+
+              if (overflow)     // In case right == -1
+              {
+                formula_on_message (expr->engine->name, expr->formula, MSG_WARNING, 0, "'%s': Out of range (%li*%li).",
+                                    expr->formula, GET_INTEGER (left), GET_INTEGER (right));
+                expr->value = UNDEF;
+                value_free (left);
+                left = UNDEF;
+              }
+              else
+                GET_INTEGER (left) /= GET_INTEGER (right);
+            }
           }
-          else if (GET_NUMBER (left) == 0.)
-            /* nothing, left unchanged ! */ ;
-          else if (isnormal (GET_NUMBER (left) / GET_NUMBER (right)))
-            GET_NUMBER (left) /= GET_NUMBER (right);
           else
           {
-            formula_on_message (expr->engine->name, expr->formula, MSG_WARNING, 0, "'%s': Out of range (%g/%g).",
-                                expr->formula, GET_NUMBER (left), GET_NUMBER (right));
-            expr->value = UNDEF;
-            value_free (left);
-            left = UNDEF;
+            double l = IS_INTEGER (left) ? GET_INTEGER (left) : GET_NUMBER (left);
+            double r = IS_INTEGER (right) ? GET_INTEGER (right) : GET_NUMBER (right);
+
+            if (r == 0.)
+            {
+              formula_on_message (expr->engine->name, expr->formula, MSG_WARNING, 0, "'%s': Division by zero.",
+                                  expr->formula);
+              expr->value = UNDEF;
+              value_free (left);
+              left = UNDEF;
+            }
+            else if (l == 0.)
+            {
+              value_free (left);
+              left.type = NUMBER;
+              GET_NUMBER (left) = 0.;
+            }
+            else if (isnormal (l / r))
+            {
+              value_free (left);
+              left.type = NUMBER;
+              GET_NUMBER (left) = l / r;
+            }
+            else
+            {
+              formula_on_message (expr->engine->name, expr->formula, MSG_WARNING, 0, "'%s': Out of range (%g/%g).",
+                                  expr->formula, GET_NUMBER (left), GET_NUMBER (right));
+              expr->value = UNDEF;
+              value_free (left);
+              left = UNDEF;
+            }
+
           }
         }
         else if (IS_VALUED (left))
@@ -1314,6 +1471,7 @@ static value_t
 parse_expression (formula_t * const expr)
 {
   value_t left = parse_term (expr);
+
   if (!expr || !expr->pos)
   {
     value_free (left);
@@ -1321,17 +1479,19 @@ parse_expression (formula_t * const expr)
   }
 
   for (;;)                      // an expression is actually a succession of terms
-                                // Expression = Term
-                                //            | Expression '+' Term
-                                //            | Expression '-' Term ;
+    // Expression = Term
+    //            | Expression '+' Term
+    //            | Expression '-' Term ;
 
   {
     token_t token = get_token (expr);
+
     switch (token.type)
     {
       case PLUS:
       {
         value_t right = parse_term (expr);
+
         if (IS_VALUED (expr->value))
         {
           if (IS_STRING (left))
@@ -1339,23 +1499,25 @@ parse_expression (formula_t * const expr)
             if (IS_STRING (right))
             {
               char *v = malloc ((strlen (GET_STRING (left)) + strlen (GET_STRING (right)) + 1) * sizeof (*v));
+
               CHECK_ALLOC (v);
               strcpy (v, GET_STRING (left));
               strcat (v, GET_STRING (right));
               value_free (left);
               left = __MAKE_STRING (v, 0);
             }
-            else if (IS_NUMBER (right) && GET_NUMBER (right) >= 0)
+            else if (IS_INTEGER (right) && GET_INTEGER (right) >= 0)
             {
-              const char *fmt = "%s%.0f";
-              int len = snprintf (0, 0, fmt, GET_STRING (left), GET_NUMBER (right));
+              const char *fmt = "%s%li";
+              int len = snprintf (0, 0, fmt, GET_STRING (left), GET_INTEGER (right));
               char *v = 0;
+
               if (len >= 0)
               {
                 len++;
                 v = malloc (len * sizeof (*v));
                 CHECK_ALLOC (v);
-                snprintf (v, len, fmt, GET_STRING (left), GET_NUMBER (right));
+                snprintf (v, len, fmt, GET_STRING (left), GET_INTEGER (right));
               }
               value_free (left);
               left = __MAKE_STRING (v, 0);
@@ -1363,7 +1525,7 @@ parse_expression (formula_t * const expr)
             else
             {
               formula_on_message (expr->engine->name, expr->formula, MSG_WARNING, 0,
-                                  "'%s': Operation not allowed (negative value added).", expr->formula);
+                                  "'%s': Operation not allowed (not a positive integer added).", expr->formula);
               expr->value = UNDEF;
               value_free (left);
               left = UNDEF;
@@ -1371,8 +1533,20 @@ parse_expression (formula_t * const expr)
           }
           else if (IS_NUMBER (left) && IS_NUMBER (right))
             GET_NUMBER (left) += GET_NUMBER (right);
+          else if (IS_NUMBER (left) && IS_INTEGER (right))
+            GET_NUMBER (left) += GET_INTEGER (right);
+          else if (IS_INTEGER (left) && IS_NUMBER (right))
+          {
+            value_free (left);
+            GET_NUMBER (left) = GET_INTEGER (left) + GET_NUMBER (right);
+            left.type = NUMBER;
+          }
+          else if (IS_INTEGER (left) && IS_INTEGER (right))
+            GET_INTEGER (left) += GET_INTEGER (right);
           else if (IS_DATE_TIME (left) && IS_NUMBER (right))
             tm_addseconds (&GET_DATE_TIME (left), 24 * 60 * 60 * GET_NUMBER (right));
+          else if (IS_DATE_TIME (left) && IS_INTEGER (right))
+            tm_addseconds (&GET_DATE_TIME (left), 24 * 60 * 60 * GET_INTEGER (right));
           else
           {
             formula_on_message (expr->engine->name, expr->formula, MSG_WARNING, 0, "'%s': Operation not allowed.",
@@ -1393,13 +1567,28 @@ parse_expression (formula_t * const expr)
       case MINUS:
       {
         value_t right = parse_term (expr);
+
         if (IS_VALUED (expr->value))
         {
           if (IS_DATE_TIME (left) && IS_NUMBER (right))
             tm_addseconds (&GET_DATE_TIME (left), -24 * 60 * 60 * GET_NUMBER (right));
+          else if (IS_DATE_TIME (left) && IS_INTEGER (right))
+            tm_addseconds (&GET_DATE_TIME (left), -24 * 60 * 60 * GET_INTEGER (right));
           else if (IS_DATE_TIME (left) && IS_DATE_TIME (right))
-            left = MAKE_NUMBER (1. * tm_diffseconds(GET_DATE_TIME (right), GET_DATE_TIME (left)) / 24. / 60. / 60.);
-          else if (!IS_NUMBER (left) || !IS_NUMBER (right))
+            left = MAKE_NUMBER (1. * tm_diffseconds (GET_DATE_TIME (right), GET_DATE_TIME (left)) / 24. / 60. / 60.);
+          else if (IS_NUMBER (left) && IS_NUMBER (right))
+            GET_NUMBER (left) -= GET_NUMBER (right);
+          else if (IS_NUMBER (left) && IS_INTEGER (right))
+            GET_NUMBER (left) -= GET_INTEGER (right);
+          else if (IS_INTEGER (left) && IS_NUMBER (right))
+          {
+            value_free (left);
+            GET_NUMBER (left) = GET_INTEGER (left) - GET_NUMBER (right);
+            left.type = NUMBER;
+          }
+          else if (IS_INTEGER (left) && IS_INTEGER (right))
+            GET_INTEGER (left) -= GET_INTEGER (right);
+          else
           {
             formula_on_message (expr->engine->name, expr->formula, MSG_WARNING, 0, "'%s': Operation not allowed.",
                                 expr->formula);
@@ -1407,8 +1596,6 @@ parse_expression (formula_t * const expr)
             value_free (left);
             left = UNDEF;
           }
-          else
-            GET_NUMBER (left) -= GET_NUMBER (right);
         }
         else if (IS_VALUED (left))
         {
@@ -1438,6 +1625,7 @@ static value_t
 parse_comparison (formula_t * const expr)
 {
   value_t left = parse_expression (expr);
+
   if (!expr || !expr->pos)
   {
     value_free (left);
@@ -1447,15 +1635,23 @@ parse_comparison (formula_t * const expr)
   value_t ret = ZERO;
 
   token_t token = get_token (expr);
+
   switch (token.type)
   {
     case LT:
     {
       value_t right = parse_expression (expr);
+
       if (IS_VALUED (expr->value))
       {
         if (IS_NUMBER (left) && IS_NUMBER (right))
           ret = (GET_NUMBER (left) < GET_NUMBER (right) ? ONE : ZERO);
+        else if (IS_NUMBER (left) && IS_INTEGER (right))
+          ret = (GET_NUMBER (left) < GET_INTEGER (right) ? ONE : ZERO);
+        else if (IS_INTEGER (left) && IS_NUMBER (right))
+          ret = (GET_INTEGER (left) < GET_NUMBER (right) ? ONE : ZERO);
+        else if (IS_INTEGER (left) && IS_INTEGER (right))
+          ret = (GET_INTEGER (left) < GET_INTEGER (right) ? ONE : ZERO);
         else if (IS_STRING (left) && IS_STRING (right))
           ret = (strcmp (GET_STRING (left), GET_STRING (right)) < 0 ? ONE : ZERO);
         else if (IS_DATE_TIME (left) && IS_DATE_TIME (right))
@@ -1476,10 +1672,17 @@ parse_comparison (formula_t * const expr)
     case GT:
     {
       value_t right = parse_expression (expr);
+
       if (IS_VALUED (expr->value))
       {
         if (IS_NUMBER (left) && IS_NUMBER (right))
           ret = (GET_NUMBER (left) > GET_NUMBER (right) ? ONE : ZERO);
+        else if (IS_INTEGER (left) && IS_NUMBER (right))
+          ret = (GET_INTEGER (left) > GET_NUMBER (right) ? ONE : ZERO);
+        else if (IS_NUMBER (left) && IS_INTEGER (right))
+          ret = (GET_NUMBER (left) > GET_INTEGER (right) ? ONE : ZERO);
+        if (IS_INTEGER (left) && IS_INTEGER (right))
+          ret = (GET_INTEGER (left) > GET_INTEGER (right) ? ONE : ZERO);
         else if (IS_STRING (left) && IS_STRING (right))
           ret = (strcmp (GET_STRING (left), GET_STRING (right)) > 0 ? ONE : ZERO);
         else if (IS_DATE_TIME (left) && IS_DATE_TIME (right))
@@ -1500,10 +1703,17 @@ parse_comparison (formula_t * const expr)
     case EQ:
     {
       value_t right = parse_expression (expr);
+
       if (IS_VALUED (expr->value))
       {
         if (IS_NUMBER (left) && IS_NUMBER (right))
           ret = (GET_NUMBER (left) == GET_NUMBER (right) ? ONE : ZERO);
+        else if (IS_INTEGER (left) && IS_NUMBER (right))
+          ret = (GET_INTEGER (left) == GET_NUMBER (right) ? ONE : ZERO);
+        else if (IS_NUMBER (left) && IS_INTEGER (right))
+          ret = (GET_NUMBER (left) == GET_INTEGER (right) ? ONE : ZERO);
+        else if (IS_INTEGER (left) && IS_INTEGER (right))
+          ret = (GET_INTEGER (left) == GET_INTEGER (right) ? ONE : ZERO);
         else if (IS_STRING (left) && IS_STRING (right))
           ret = (strcmp (GET_STRING (left), GET_STRING (right)) == 0 ? ONE : ZERO);
         else if (IS_DATE_TIME (left) && IS_DATE_TIME (right))
@@ -1525,10 +1735,17 @@ parse_comparison (formula_t * const expr)
     case LE:
     {
       value_t right = parse_expression (expr);
+
       if (IS_VALUED (expr->value))
       {
         if (IS_NUMBER (left) && IS_NUMBER (right))
           ret = (GET_NUMBER (left) <= GET_NUMBER (right) ? ONE : ZERO);
+        else if (IS_NUMBER (left) && IS_INTEGER (right))
+          ret = (GET_NUMBER (left) <= GET_INTEGER (right) ? ONE : ZERO);
+        else if (IS_INTEGER (left) && IS_NUMBER (right))
+          ret = (GET_INTEGER (left) <= GET_NUMBER (right) ? ONE : ZERO);
+        else if (IS_INTEGER (left) && IS_INTEGER (right))
+          ret = (GET_INTEGER (left) <= GET_INTEGER (right) ? ONE : ZERO);
         else if (IS_STRING (left) && IS_STRING (right))
           ret = (strcmp (GET_STRING (left), GET_STRING (right)) <= 0 ? ONE : ZERO);
         else if (IS_DATE_TIME (left) && IS_DATE_TIME (right))
@@ -1549,10 +1766,17 @@ parse_comparison (formula_t * const expr)
     case GE:
     {
       value_t right = parse_expression (expr);
+
       if (IS_VALUED (expr->value))
       {
         if (IS_NUMBER (left) && IS_NUMBER (right))
           ret = (GET_NUMBER (left) >= GET_NUMBER (right) ? ONE : ZERO);
+        else if (IS_INTEGER (left) && IS_NUMBER (right))
+          ret = (GET_INTEGER (left) >= GET_NUMBER (right) ? ONE : ZERO);
+        else if (IS_NUMBER (left) && IS_INTEGER (right))
+          ret = (GET_NUMBER (left) >= GET_INTEGER (right) ? ONE : ZERO);
+        else if (IS_INTEGER (left) && IS_INTEGER (right))
+          ret = (GET_INTEGER (left) >= GET_INTEGER (right) ? ONE : ZERO);
         else if (IS_STRING (left) && IS_STRING (right))
           ret = (strcmp (GET_STRING (left), GET_STRING (right)) >= 0 ? ONE : ZERO);
         else if (IS_DATE_TIME (left) && IS_DATE_TIME (right))
@@ -1573,10 +1797,17 @@ parse_comparison (formula_t * const expr)
     case NEQ:
     {
       value_t right = parse_expression (expr);
+
       if (IS_VALUED (expr->value))
       {
         if (IS_NUMBER (left) && IS_NUMBER (right))
           ret = (GET_NUMBER (left) != GET_NUMBER (right) ? ONE : ZERO);
+        else if (IS_INTEGER (left) && IS_NUMBER (right))
+          ret = (GET_INTEGER (left) != GET_NUMBER (right) ? ONE : ZERO);
+        else if (IS_NUMBER (left) && IS_INTEGER (right))
+          ret = (GET_NUMBER (left) != GET_INTEGER (right) ? ONE : ZERO);
+        else if (IS_INTEGER (left) && IS_INTEGER (right))
+          ret = (GET_INTEGER (left) != GET_INTEGER (right) ? ONE : ZERO);
         else if (IS_STRING (left) && IS_STRING (right))
           ret = (strcmp (GET_STRING (left), GET_STRING (right)) != 0 ? ONE : ZERO);
         else if (IS_DATE_TIME (left) && IS_DATE_TIME (right))
@@ -1617,6 +1848,7 @@ static formula_t *
 formula_allocate (const char *variable_name, const char *formula_string)
 {
   formula_t *expr = malloc (sizeof (*expr));
+
   CHECK_ALLOC (expr);
 
   expr->variable_name = mystrdup (variable_name);
@@ -1649,6 +1881,7 @@ formula_free (formula_t * expr, int reparse)
   expr->value = UNDEF;
 
   dependency_t *ndep;
+
   for (dependency_t * dep = expr->dependencies; dep; dep = ndep)
   {
     ndep = dep->next;
@@ -1675,6 +1908,7 @@ formula_free (formula_t * expr, int reparse)
     expr->min_range = expr->max_range = 0;
 
     alert_t *nal;
+
     for (alert_t * al = expr->alerts; al; al = nal)
     {
       nal = al->next;
@@ -1687,6 +1921,7 @@ formula_free (formula_t * expr, int reparse)
     {
       // Remove formula 'expr' from engine
       formula_t *form = expr->engine->formulae; // 1st formula in the list
+
       if (form == expr)
         expr->engine->formulae = expr->next;
       else
@@ -1731,6 +1966,7 @@ formula_depends_on (formula_t * const form, const char *variable)
       return 1;
 
     formula_t *f;
+
     for (f = form->engine->formulae; f && (strcmp (f->variable_name, dep->variable_name)); f = f->next)
       /* nothing */ ;
 
@@ -1839,6 +2075,7 @@ formula_parse (formula_t * const expr)
     expr->value = parse_comparison (expr);
 
     token_t token = get_token (expr);
+
     if (token.type != END)
     {
       switch (token.type)
@@ -1896,12 +2133,14 @@ formula_parse (formula_t * const expr)
   {
     // Add the formula in the engine
     formula_t *form = 0;
+
     for (form = expr->engine->formulae; form && form != expr; form = form->next)
       /* nothing */ ;
 
     if (!form)                  // the formula is not in the engine list yet
     {
       formula_t *previous = 0;
+
       for (form = expr->engine->formulae; form && strcmp (form->variable_name, expr->variable_name); form = form->next)
         previous = form;
 
@@ -1946,12 +2185,14 @@ myrandom ()
   static int myrandomisinit = 0;
 
   struct drand48_data buffer;
+
   if (!myrandomisinit)
   {
     srand48_r (time (0), &buffer);
     myrandomisinit = 1;
   }
   double ret = 0;
+
   drand48_r (&buffer, &ret);
   return ret;
 
@@ -1998,7 +2239,7 @@ and (int nbArgs, const value_t * const args)
   }
 
   for (int i = 0; i < nbArgs; i++)
-    if (!IS_NUMBER (args[i]))
+    if (!IS_INTEGER (args[i]))
     {
       //fprintf(stderr, "Invalid type for argument %i nbArgs (%s, %s, %i)\n",i+1, __func__,__FILE__,__LINE__);
       //exit(-1);
@@ -2006,11 +2247,12 @@ and (int nbArgs, const value_t * const args)
       return UNDEF;
     }
 
-  int ret = (GET_NUMBER (args[0]) && GET_NUMBER (args[1]));
-  for (int i = 3; i <= nbArgs; i++)
-    ret = (ret && GET_NUMBER (args[i - 1]));
+  int ret = (GET_INTEGER (args[0]) && GET_INTEGER (args[1]));
 
-  return MAKE_NUMBER (ret);
+  for (int i = 3; i <= nbArgs; i++)
+    ret = (ret && GET_INTEGER (args[i - 1]));
+
+  return MAKE_INTEGER (ret);
 }
 
 static value_t
@@ -2023,14 +2265,15 @@ or (int nbArgs, const value_t * const args)
   }
 
   for (int i = 0; i < nbArgs; i++)
-    if (!IS_NUMBER (args[i]))
+    if (!IS_INTEGER (args[i]))
       return UNDEF;
 
-  int ret = (GET_NUMBER (args[0]) || GET_NUMBER (args[1]));
-  for (int i = 3; i <= nbArgs; i++)
-    ret = (ret || GET_NUMBER (args[i - 1]));
+  int ret = (GET_INTEGER (args[0]) || GET_INTEGER (args[1]));
 
-  return MAKE_NUMBER (ret);
+  for (int i = 3; i <= nbArgs; i++)
+    ret = (ret || GET_INTEGER (args[i - 1]));
+
+  return MAKE_INTEGER (ret);
 }
 
 static value_t
@@ -2042,12 +2285,12 @@ iiff (int nbArgs, const value_t * const args)
     exit (-1);
   }
 
-  if (!IS_NUMBER (args[0]))
+  if (!IS_INTEGER (args[0]))
   {
     fprintf (stderr, "Invalid argument type (%s, %s, %i)\n", __func__, __FILE__, __LINE__);
     exit (-1);
   }
-  return (GET_NUMBER (args[0]) ? args[1] : args[2]);
+  return (GET_INTEGER (args[0]) ? args[1] : args[2]);
 }
 
 static value_t
@@ -2060,18 +2303,30 @@ sum (int nbArgs, const value_t * const args)
   if (IS_NUMBER (args[0]))
   {
     double ret = 0.;
+
     for (int i = 0; i < nbArgs; i++)
       ret += GET_NUMBER (args[i]);
 
     return MAKE_NUMBER (ret);
   }
+  else if (IS_INTEGER (args[0]))
+  {
+    double ret = 0.;
+
+    for (int i = 0; i < nbArgs; i++)
+      ret += GET_INTEGER (args[i]);
+
+    return MAKE_INTEGER (ret);
+  }
   else if (IS_STRING (args[0]))
   {
     size_t len = 0;
+
     for (int i = 0; i < nbArgs; i++)
       len += strlen (GET_STRING (args[i]));
 
     char *ret = malloc ((len + 1) * sizeof (*ret));
+
     CHECK_ALLOC (ret);
     *ret = 0;
 
@@ -2090,10 +2345,32 @@ to_number (int nbArgs, const value_t * const args)
   if (nbArgs < 1 || !IS_STRING (args[0]))
     return UNDEF;
 
-  char *endptr = 0;
-  double ret = strtod (GET_STRING (args[0]), &endptr);
-  if (endptr != GET_STRING (args[0]))
-    return MAKE_NUMBER (ret);
+  // Try to read an integer
+  char *endl = 0;
+  long int valuel = strtol (GET_STRING (args[0]), &endl, 0);
+
+  // Try to read a number
+  char *endd = 0;
+  double valued = strtod (GET_STRING (args[0]), &endd);
+
+  if (endd == GET_STRING (args[0]))
+    return UNDEF;
+  else if (endd > endl)
+    return MAKE_NUMBER (valued);
+  else
+    return MAKE_INTEGER (valuel);
+}
+
+static value_t
+round_number (int nbArgs, const value_t * const args)
+{
+  if (nbArgs < 1)
+    return UNDEF;
+
+  if (IS_NUMBER (args[0]))
+    return MAKE_INTEGER (lround (GET_NUMBER (args[0])));
+  else if (IS_INTEGER (args[0]))
+    return args[0];
   else
     return UNDEF;
 }
@@ -2121,32 +2398,41 @@ to_string (int nbArgs, const value_t * const args)
   else if (IS_DATE_TIME (args[0]))
   {
     char s[200];
-    if (nbArgs > 1 && IS_STRING(args[1]))
+
+    if (nbArgs > 1 && IS_STRING (args[1]))
       strftime (s, sizeof (s) / sizeof (*s), GET_STRING (args[1]), &GET_DATE_TIME (args[0]));
     else
       strftime (s, sizeof (s) / sizeof (*s), "%x %X", &GET_DATE_TIME (args[0]));
 
     return MAKE_STRING (s);
   }
+  else if (!IS_INTEGER (args[0]) && !IS_NUMBER (args[0]))
+    return UNDEF;
 
   // 1. Get format from arguments:
-  const char formats[] = "eEfFgG";
+  const char formatd[] = "eEfFgG";
+  const char formatl[] = "diouxX";
   const char flags[] = "0- +";
-  const char DEFAULT_FORMAT[] = "*.*g";
+  const char DEFAULT_FORMATD[] = "*.*g";
+  const char DEFAULT_FORMATL[] = "*.*li";
 
-  char *format = calloc (1 + strlen (flags) + strlen (DEFAULT_FORMAT) + 1, sizeof (*format));
+  char *format = calloc (1 + strlen (flags) + strlen (IS_NUMBER (args[0]) ? DEFAULT_FORMATD : DEFAULT_FORMATL) + 1,
+                         sizeof (*format));
+
   CHECK_ALLOC (format);
   *format = '%';                // format head
 
   // 1.1. precision:
   int precision = 6;            // default precision
-  if (nbArgs >= 3 && IS_NUMBER (args[2]))
-    precision = GET_NUMBER (args[2]);
+
+  if (nbArgs >= 3 && IS_INTEGER (args[2]))
+    precision = GET_INTEGER (args[2]);
 
   // 1.2. field width:
   int width = 0;                // default field width
-  if (nbArgs >= 4 && IS_NUMBER (args[3]))
-    width = GET_NUMBER (args[3]);
+
+  if (nbArgs >= 4 && IS_INTEGER (args[3]))
+    width = GET_INTEGER (args[3]);
 
   // 1.3. flags:
   if (nbArgs >= 5 && IS_STRING (args[4]))
@@ -2155,12 +2441,13 @@ to_string (int nbArgs, const value_t * const args)
         format[strlen (format)] = flags[i - 1]; // Appends
 
   // 1.4. conversion specifier:
-  strcat (format, DEFAULT_FORMAT);      // format tail, default conversion specifier is 'g'
+  strcat (format, IS_NUMBER (args[0]) ? DEFAULT_FORMATD : DEFAULT_FORMATL);     // format tail, default conversion specifier is 'g' or 'i'
   if (nbArgs >= 2 && IS_STRING (args[1]))
     for (int i = strlen (GET_STRING (args[1])); i; i--)
     {
       char *pc;
-      if ((pc = index (formats, GET_STRING (args[1])[i - 1])))
+
+      if ((pc = index (IS_NUMBER (args[0]) ? formatd : formatl, GET_STRING (args[1])[i - 1])))
       {
         format[strlen (format) - 1] = *pc;      // Overwrites
         break;
@@ -2170,6 +2457,7 @@ to_string (int nbArgs, const value_t * const args)
   // 2. Convert to string using format:
   char *v = 0;
   int len = snprintf (0, 0, format, width, precision, GET_NUMBER (args[0]));
+
   if (len >= 0)
   {
     len++;
@@ -2182,7 +2470,8 @@ to_string (int nbArgs, const value_t * const args)
   return __MAKE_STRING (v, 0);
 }
 
-static void fake_localtimeinUTC (struct tm *d)
+static void
+fake_localtimeinUTC (struct tm *d)
 {
   // Note: as arithmetics with dates use decimal values
   // (differences between dates are measured in days and fractions of days),
@@ -2202,6 +2491,7 @@ now (int nbArgs, const value_t * const args)
     return UNDEF;
 
   struct tm d;
+
   tm_makenow (&d);
 
   fake_localtimeinUTC (&d);
@@ -2216,6 +2506,7 @@ today (int nbArgs, const value_t * const args)
     return UNDEF;
 
   struct tm d;
+
   tm_maketoday (&d);
 
   fake_localtimeinUTC (&d);
@@ -2230,6 +2521,7 @@ inline static engine_t *
 engine_get (const char *engine_name)
 {
   engine_t *engine;
+
   for (engine = theEngines; engine && strcmp (engine->name, engine_name); engine = engine->next)
     /* nothing */ ;
 
@@ -2240,15 +2532,18 @@ inline static formula_t *
 engine_identifier_get (const char *engine_name, const char *identifier)
 {
   engine_t *engine;
+
   if (!(engine = engine_get (engine_name)))
     return 0;
 
   // Add the formula in the engine
   formula_t *form = 0;
+
   for (form = engine->formulae; form && strcmp (form->variable_name, identifier); form = form->next)
     /* nothing */ ;
 
 /*  if (!form)*/
+
 /*    formula_on_message(engine_name, identifier, MSG_ERROR, "Unknown variable.") ;*/
 
   return form;
@@ -2258,10 +2553,12 @@ inline static size_t
 engine_size (const char *engine_name)
 {
   engine_t *engine;
+
   if (!(engine = engine_get (engine_name)))
     return 0;
 
   size_t size = 0;
+
   for (formula_t * f = engine->formulae; f; f = f->next)
     size++;
 
@@ -2317,14 +2614,17 @@ gsl_minimizer (const gsl_vector * v, void *p)
 {
   minimize_parameter_t *params = (minimize_parameter_t *) p;
   int i = 0;
+
   for (dimension_t * d = params->degrees_of_freedom; d; d = d->next)
   {
     formula_t *form = d->variable;
+
     if (!formula_set (form, MAKE_NUMBER (x_to_f (form, gsl_vector_get (v, i)))))
       return GSL_NAN;
     i++;
   }
   value_t val;
+
   if (!formula_get (params->minimize, &val))
     return GSL_NAN;
   return GET_NUMBER (val);
@@ -2340,11 +2640,13 @@ v_engine_minimize (const char *engine_name, const char *variable_to_minimize, si
   const int MAX_ITER = 1000;
 
   engine_t *engine;
+
   if (!(engine = engine_get (engine_name)))
     return 0;
 
   minimize_parameter_t params;
   formula_t *form = engine_identifier_get (engine_name, variable_to_minimize);
+
   if (!form)
   {
     formula_on_message (engine_name, variable_to_minimize, MSG_ERROR, 0, "Undefined variable name.");
@@ -2359,6 +2661,7 @@ v_engine_minimize (const char *engine_name, const char *variable_to_minimize, si
   }
 
   size_t fs = 0;
+
   params.degrees_of_freedom = 0;
   dimension_t *last_df = 0;
 
@@ -2366,6 +2669,7 @@ v_engine_minimize (const char *engine_name, const char *variable_to_minimize, si
   {
     const char *arg = vargs[i];
     formula_t *f;
+
     if (!(f = engine_identifier_get (engine_name, arg)))
       formula_on_message (engine_name, arg, MSG_ERROR, 0, "Undefined variable. Ignored.");
     else if (!formula_depends_on (form, arg))
@@ -2378,6 +2682,7 @@ v_engine_minimize (const char *engine_name, const char *variable_to_minimize, si
     {
       fs++;
       dimension_t *d = malloc (sizeof (*d));
+
       CHECK_ALLOC (d);
       formula_on_message (engine_name, arg, MSG_INFO, 0, "Degree(s) of freedom.");
       d->variable = f;
@@ -2398,6 +2703,7 @@ v_engine_minimize (const char *engine_name, const char *variable_to_minimize, si
   const gsl_multimin_fminimizer_type *T = gsl_multimin_fminimizer_nmsimplex2;
 
   gsl_multimin_function minex_func;
+
   /* Initialize method and iterate */
   minex_func.n = fs;
   minex_func.f = gsl_minimizer;
@@ -2405,17 +2711,21 @@ v_engine_minimize (const char *engine_name, const char *variable_to_minimize, si
 
   /* Starting point */
   gsl_vector *x = gsl_vector_alloc (fs);
+
   /* Set initial step sizes to 1 */
   gsl_vector *ss = gsl_vector_alloc (fs);
   gsl_multimin_fminimizer *s = gsl_multimin_fminimizer_alloc (T, fs);
+
   CHECK_ALLOC (x);
   CHECK_ALLOC (ss);
   CHECK_ALLOC (s);
 
   dimension_t *d = params.degrees_of_freedom;
+
   for (size_t i = 0; i < fs; i++)
   {
     value_t value;
+
     if (formula_get (d->variable, &value) && IS_NUMBER (value)
         && identifier_set (engine_name, d->variable->variable_name, value))
       gsl_vector_set (x, i, f_to_x (d->variable));
@@ -2440,6 +2750,7 @@ v_engine_minimize (const char *engine_name, const char *variable_to_minimize, si
   }
 
   int quiet = engine->quiet;
+
   engine->quiet = 1;
 
   if (gsl_minimizer (x, &params) == GSL_NAN)
@@ -2453,6 +2764,7 @@ v_engine_minimize (const char *engine_name, const char *variable_to_minimize, si
   size_t iter = 0;
   int status = GSL_CONTINUE;    /* defined in gsl_errno.h */
   double size;
+
   while (RESTART_ITER && status == GSL_CONTINUE && iter < MAX_ITER)
   {
     iter++;
@@ -2469,6 +2781,7 @@ v_engine_minimize (const char *engine_name, const char *variable_to_minimize, si
   else
   {
     value_t min;
+
     formula_get (params.minimize, &min);
     formula_on_message (engine_name, variable_to_minimize, MSG_INFO, 0, "Converged to minimum after %i iterations.",
                         iter);
@@ -2478,11 +2791,13 @@ v_engine_minimize (const char *engine_name, const char *variable_to_minimize, si
   /* free list of variables here */
   // search and destroy
   dimension_t *nd;
+
   for (dimension_t * d = params.degrees_of_freedom; d; d = nd)
   {
     if (status == GSL_SUCCESS)
     {
       value_t value;
+
       formula_get (d->variable, &value);
       formula_on_message (engine_name, d->variable->variable_name, MSG_INFO, 0, " = %g", GET_NUMBER (value));
     }
@@ -2512,6 +2827,7 @@ gsl_rootfinder (const gsl_vector * x, void *p, gsl_vector * f)
   for (dimension_t * d = params->degrees_of_freedom; d; d = d->next)
   {
     formula_t *form = d->variable;
+
     if (!formula_set (form, MAKE_NUMBER (x_to_f (form, gsl_vector_get (x, i)))))
       return GSL_EDOM;
     i++;
@@ -2522,6 +2838,7 @@ gsl_rootfinder (const gsl_vector * x, void *p, gsl_vector * f)
   {
     value_t value;
     formula_t *form = d->variable;
+
     if (!formula_get (form, &value))
       return GSL_ERANGE;
     else if (f)
@@ -2538,9 +2855,11 @@ v_engine_rootfind (const char *engine_name, size_t size, const char *fargs[], co
   const int MAX_ITER = 1000;
 
   int OK = 1;
+
   gsl_set_error_handler_off ();
 
   engine_t *engine;
+
   if (!(engine = engine_get (engine_name)))
     return 0;
 
@@ -2564,6 +2883,7 @@ v_engine_rootfind (const char *engine_name, size_t size, const char *fargs[], co
     {
       formula_on_message (engine_name, arg, MSG_INFO, 0, "Nullify.");
       dimension_t *d = malloc (sizeof (*d));
+
       CHECK_ALLOC (d);
       d->variable = f;
       d->next = 0;
@@ -2600,6 +2920,7 @@ v_engine_rootfind (const char *engine_name, size_t size, const char *fargs[], co
     {
       formula_on_message (engine_name, arg, MSG_INFO, 0, "Root.");
       dimension_t *d = malloc (sizeof (*d));
+
       CHECK_ALLOC (d);
       d->variable = f;
       d->next = 0;
@@ -2614,27 +2935,33 @@ v_engine_rootfind (const char *engine_name, size_t size, const char *fargs[], co
   }
 
   int status = GSL_CONTINUE;    /* defined in gsl_errno.h */
+
   if (OK)
   {
     int quiet = engine->quiet;
+
     engine->quiet = 1;
 
     const gsl_multiroot_fsolver_type *T = gsl_multiroot_fsolver_hybrids;
     gsl_multiroot_fsolver *s = gsl_multiroot_fsolver_alloc (T, size);
     gsl_multiroot_function root_func;
+
     root_func.n = size;
     root_func.f = gsl_rootfinder;
     root_func.params = (void *) &params;
 
     /* Starting point */
     gsl_vector *x = gsl_vector_alloc (size);
+
     CHECK_ALLOC (x);
     CHECK_ALLOC (s);
 
     dimension_t *d = params.degrees_of_freedom;
+
     for (size_t i = 0; i < size; i++)
     {
       value_t value;
+
       if (formula_get (d->variable, &value) && IS_NUMBER (value)
           && identifier_set (engine_name, d->variable->variable_name, value))
         gsl_vector_set (x, i, f_to_x (d->variable));
@@ -2681,11 +3008,13 @@ v_engine_rootfind (const char *engine_name, size_t size, const char *fargs[], co
   /* free list of variables here */
   // search and destroy
   dimension_t *nd;
+
   for (dimension_t * d = params.nullify; d; d = nd)
   {
     if (status == GSL_SUCCESS)
     {
       value_t value;
+
       formula_get (d->variable, &value);
       formula_on_message (engine_name, d->variable->variable_name, MSG_INFO, 0, " = %g", GET_NUMBER (value));
     }
@@ -2699,6 +3028,7 @@ v_engine_rootfind (const char *engine_name, size_t size, const char *fargs[], co
     if (status == GSL_SUCCESS)
     {
       value_t value;
+
       formula_get (d->variable, &value);
       formula_on_message (engine_name, d->variable->variable_name, MSG_INFO, 0, " = %g", GET_NUMBER (value));
     }
@@ -2723,7 +3053,8 @@ identifier_print (const char *engine_name, const char *identifier, int nbtabs, i
     char base_format[50] = "";
     char message[50] = "";
 
-    if (IS_STRING (form->value) || IS_DATE_TIME (form->value) || (!form->min_range && !form->max_range))
+    if (IS_STRING (form->value) || IS_DATE_TIME (form->value) || IS_INTEGER (form->value)
+        || (!form->min_range && !form->max_range))
       /* nothing */ ;
     else if (form->min_range && !form->max_range)
       snprintf (base_format, 50, " [%g;[", *form->min_range);
@@ -2738,11 +3069,14 @@ identifier_print (const char *engine_name, const char *identifier, int nbtabs, i
       snprintf (message, 50, "%s%%s%%s (no value)", base_format);
     else if (IS_NUMBER (form->value))
       snprintf (message, 50, "%s%%s%%s (=%g)", base_format, GET_NUMBER (form->value));
+    else if (IS_INTEGER (form->value))
+      snprintf (message, 50, "%s%%s%%s (=%li)", base_format, GET_INTEGER (form->value));
     else if (IS_STRING (form->value))
       snprintf (message, 50, "%s%%s%%s (=\"%s\")", base_format, GET_STRING (form->value));
     else if (IS_DATE_TIME (form->value))
     {
       char d[200], t[200];
+
       if (tm_getdateintostring (GET_DATE_TIME (form->value), d, sizeof (d) / sizeof (*d)) == TM_OK &&
           tm_gettimeintostring (GET_DATE_TIME (form->value), t, sizeof (t) / sizeof (*t)) == TM_OK)
         snprintf (message, 50, "%s%%s%%s (=\'%s %s\')", base_format, d, t);
@@ -2822,15 +3156,18 @@ read_command_line (const char *engine_name, char *command_line)
   const char *const commands[] =
     { "INCLUDE", "SHOW", "MINIMIZE", "TREE", "COMMENT", "ALERT", "SET", "#", "SOLVE", "DELETE" };
   const int nbCommands = sizeof (commands) / sizeof (*commands);
+
   for (int iCommand = 0; iCommand < nbCommands; iCommand++)
   {
     const char *command = commands[iCommand];
     int len = strlen (command);
+
     if (!strncmp (command_line, command, len) && (isspace (command_line[len]) || command_line[len] == 0))
     {
       if (!strcmp (command, "INCLUDE"))
       {
         char *arg1 = next_arg (command_line);
+
         if (arg1)
         {
           engine_inject_command_file (engine_name, next_arg (command_line), 0, 0);
@@ -2845,6 +3182,7 @@ read_command_line (const char *engine_name, char *command_line)
       else if (!strcmp (command, "SHOW"))
       {
         char *arg1 = next_arg (command_line);
+
         if (arg1)
         {
           identifier_print (engine_name, next_arg (command_line), 0, 1);
@@ -2861,11 +3199,13 @@ read_command_line (const char *engine_name, char *command_line)
       else if (!strcmp (command, "SET"))
       {
         engine_t *engine;
+
         if (!(engine = engine_get (engine_name)))
           return 0;
 
         char *arg1 = next_arg (command_line);
         char *arg2 = next_arg (arg1);
+
         if (!arg1 || !*arg1)
         {
           formula_on_message (engine_name, command_line, MSG_ERROR, 0, "Missing argument identifier.");
@@ -2878,6 +3218,7 @@ read_command_line (const char *engine_name, char *command_line)
         }
 
         formula_t *form = formula_allocate (0, arg2);
+
         form->engine = engine;
         *end_arg (arg1) = 0;
         if (formula_parse (form) && IS_VALUED (form->value))
@@ -2898,6 +3239,7 @@ read_command_line (const char *engine_name, char *command_line)
         while (next_arg (arg))
         {
           char *targ = next_arg (arg);
+
           *end_arg (arg) = 0;
           arg = targ;
           freedom_size++;
@@ -2907,6 +3249,7 @@ read_command_line (const char *engine_name, char *command_line)
         }
 
         int ret = 0;
+
         if (!variable_to_minimize)
         {
           formula_on_message (engine_name, command_line, MSG_ERROR, 0, "Missing variable to minimize.");
@@ -2930,6 +3273,7 @@ read_command_line (const char *engine_name, char *command_line)
         char *arg = command_line;
 
         size_t size = 0;
+
         while ((arg = next_arg (arg)))
           size++;
 
@@ -2942,15 +3286,19 @@ read_command_line (const char *engine_name, char *command_line)
           size /= 2;
 
         const char **fargs = malloc (size * sizeof (*fargs));
+
         CHECK_ALLOC (fargs);
         const char **xargs = malloc (size * sizeof (*xargs));
+
         CHECK_ALLOC (xargs);
 
         int s = 0;
+
         arg = command_line;
         while (next_arg (arg))
         {
           char *targ = next_arg (arg);
+
           *end_arg (arg) = 0;
           arg = targ;
 
@@ -2982,6 +3330,7 @@ read_command_line (const char *engine_name, char *command_line)
         char *arg2 = next_arg (arg1);
         char *arg3 = next_arg (arg2);
         char *arg4 = next_arg (arg3);
+
         if (!arg4)
         {
           formula_on_message (engine_name, command_line, MSG_ERROR, 0, "Missing arguments.");
@@ -2992,12 +3341,14 @@ read_command_line (const char *engine_name, char *command_line)
         *end_arg (arg3) = 0;
         char *endptr;
         value_t min = MAKE_NUMBER (strtod (arg2, &endptr));
+
         if ((endptr == arg2 || *endptr) && !identifier_get (engine_name, arg2, &min))
         {
           formula_on_message (engine_name, command_line, MSG_ERROR, 0, "Invalid argument %s.", arg2);
           return 0;
         }
         value_t max = MAKE_NUMBER (strtod (arg3, &endptr));
+
         if ((endptr == arg3 || *endptr) && !identifier_get (engine_name, arg3, &max))
         {
           formula_on_message (engine_name, command_line, MSG_ERROR, 0, "Invalid argument %s.", arg3);
@@ -3008,6 +3359,7 @@ read_command_line (const char *engine_name, char *command_line)
       else if (!strcmp (command, "DELETE"))
       {
         char *identifier = next_arg (command_line);
+
         if (engine_remove_formula (engine_name, identifier))
           return 1;
         else
@@ -3020,6 +3372,7 @@ read_command_line (const char *engine_name, char *command_line)
   }
 
   char *endptr = 0;
+
   if (isid (command_line, &endptr))
   {
     if (*endptr == 0)
@@ -3072,6 +3425,7 @@ engine_open (const char *engine_name)
       return 0;
 
   engine_t *const pengine = malloc (sizeof (*pengine));
+
   CHECK_ALLOC (pengine);
 
   pengine->formulae = 0;
@@ -3146,6 +3500,9 @@ engine_open (const char *engine_name)
   engine_add_fnargs (engine_name, "to_number", to_number);
   engine_fnargs_set_nb_args (engine_name, "to_number", 1, 1);
 
+  engine_add_fnargs (engine_name, "round", round_number);
+  engine_fnargs_set_nb_args (engine_name, "round", 1, 1);
+
   engine_add_fnargs (engine_name, "to_string", to_string);
   engine_fnargs_set_nb_args (engine_name, "to_string", 1, 5);
 
@@ -3166,6 +3523,7 @@ engine_close (const char *engine_name)
 {
   engine_t *previous = 0;
   engine_t *engine;
+
   for (engine = theEngines; engine && strcmp (engine->name, engine_name); engine = engine->next)
     previous = engine;
 
@@ -3188,6 +3546,7 @@ engine_close (const char *engine_name)
    */
 
   constant_t *cnext = 0;
+
   for (constant_t * cst = engine->constants; cst; cst = cnext)
   {
     free (cst->name);
@@ -3196,6 +3555,7 @@ engine_close (const char *engine_name)
   }
 
   f0arg_t *f0next = 0;
+
   for (f0arg_t * f = engine->f0args; f; f = f0next)
   {
     free (f->name);
@@ -3204,6 +3564,7 @@ engine_close (const char *engine_name)
   }
 
   f1arg_t *f1next = 0;
+
   for (f1arg_t * f = engine->f1args; f; f = f1next)
   {
     free (f->name);
@@ -3212,6 +3573,7 @@ engine_close (const char *engine_name)
   }
 
   f2args_t *f2next = 0;
+
   for (f2args_t * f = engine->f2args; f; f = f2next)
   {
     free (f->name);
@@ -3220,6 +3582,7 @@ engine_close (const char *engine_name)
   }
 
   f3args_t *f3next = 0;
+
   for (f3args_t * f = engine->f3args; f; f = f3next)
   {
     free (f->name);
@@ -3228,6 +3591,7 @@ engine_close (const char *engine_name)
   }
 
   fnargs_t *fnnext = 0;
+
   for (fnargs_t * f = engine->fnargs; f; f = fnnext)
   {
     free (f->name);
@@ -3236,6 +3600,7 @@ engine_close (const char *engine_name)
   }
 
   library_t *lnext = 0;
+
   for (library_t * l = engine->libraries; l; l = lnext)
   {
     lnext = l->next;
@@ -3258,6 +3623,7 @@ void
 engine_set_automatic_calculation (const char *engine_name, int mode)
 {
   engine_t *engine;
+
   if (!(engine = engine_get (engine_name)))
     return;
 
@@ -3270,10 +3636,12 @@ int
 engine_add_constant (const char *engine_name, const char *constant_name, double value)
 {
   engine_t *engine;
+
   if (!(engine = engine_get (engine_name)))
     return 0;
 
   constant_t *cst = 0;
+
   for (cst = engine->constants; cst && strcmp (constant_name, cst->name); cst = cst->next)
     /* nothing */ ;
 
@@ -3300,6 +3668,7 @@ char *
 engine_next_constant (const char *engine_name, char *name)
 {
   engine_t *engine;
+
   if (!(engine = engine_get (engine_name)))
     return 0;
 
@@ -3313,6 +3682,7 @@ engine_next_constant (const char *engine_name, char *name)
   else
   {
     constant_t *f;
+
     for (f = engine->constants; f; f = f->next)
       if (!strcmp (f->name, name))
       {
@@ -3336,10 +3706,12 @@ int
 engine_add_f0arg (const char *engine_name, const char *function_name, double (*value) ())
 {
   engine_t *engine;
+
   if (!(engine = engine_get (engine_name)))
     return 0;
 
   f0arg_t *f;
+
   for (f = engine->f0args; f && strcmp (function_name, f->name); f = f->next)
     /* nothing */ ;
 
@@ -3365,6 +3737,7 @@ char *
 engine_next_f0arg (const char *engine_name, char *name)
 {
   engine_t *engine;
+
   if (!(engine = engine_get (engine_name)))
     return 0;
 
@@ -3378,6 +3751,7 @@ engine_next_f0arg (const char *engine_name, char *name)
   else
   {
     f0arg_t *f;
+
     for (f = engine->f0args; f; f = f->next)
       if (!strcmp (f->name, name))
       {
@@ -3401,10 +3775,12 @@ int
 engine_add_f1arg (const char *engine_name, const char *function_name, double (*value) (double))
 {
   engine_t *engine;
+
   if (!(engine = engine_get (engine_name)))
     return 0;
 
   f1arg_t *f;
+
   for (f = engine->f1args; f && strcmp (function_name, f->name); f = f->next)
     /* nothing */ ;
 
@@ -3430,6 +3806,7 @@ char *
 engine_next_f1arg (const char *engine_name, char *name)
 {
   engine_t *engine;
+
   if (!(engine = engine_get (engine_name)))
     return 0;
 
@@ -3443,6 +3820,7 @@ engine_next_f1arg (const char *engine_name, char *name)
   else
   {
     f1arg_t *f;
+
     for (f = engine->f1args; f; f = f->next)
       if (!strcmp (f->name, name))
       {
@@ -3466,10 +3844,12 @@ int
 engine_add_f2args (const char *engine_name, const char *function_name, double (*value) (double, double))
 {
   engine_t *engine;
+
   if (!(engine = engine_get (engine_name)))
     return 0;
 
   f2args_t *f;
+
   for (f = engine->f2args; f && strcmp (function_name, f->name); f = f->next)
     /* nothing */ ;
 
@@ -3495,6 +3875,7 @@ char *
 engine_next_f2args (const char *engine_name, char *name)
 {
   engine_t *engine;
+
   if (!(engine = engine_get (engine_name)))
     return 0;
 
@@ -3508,6 +3889,7 @@ engine_next_f2args (const char *engine_name, char *name)
   else
   {
     f2args_t *f;
+
     for (f = engine->f2args; f; f = f->next)
       if (!strcmp (f->name, name))
       {
@@ -3531,10 +3913,12 @@ int
 engine_add_f3args (const char *engine_name, const char *function_name, double (*value) (double, double, double))
 {
   engine_t *engine;
+
   if (!(engine = engine_get (engine_name)))
     return 0;
 
   f3args_t *f;
+
   for (f = engine->f3args; f && strcmp (function_name, f->name); f = f->next)
     /* nothing */ ;
 
@@ -3560,6 +3944,7 @@ char *
 engine_next_f3args (const char *engine_name, char *name)
 {
   engine_t *engine;
+
   if (!(engine = engine_get (engine_name)))
     return 0;
 
@@ -3573,6 +3958,7 @@ engine_next_f3args (const char *engine_name, char *name)
   else
   {
     f3args_t *f;
+
     for (f = engine->f3args; f; f = f->next)
       if (!strcmp (f->name, name))
       {
@@ -3596,10 +3982,12 @@ int
 engine_add_fnargs (const char *engine_name, const char *function_name, value_t (*fct) (int, const value_t * const))
 {
   engine_t *engine;
+
   if (!(engine = engine_get (engine_name)))
     return 0;
 
   fnargs_t *f;
+
   for (f = engine->fnargs; f && strcmp (function_name, f->name); f = f->next)
     /* nothing */ ;
 
@@ -3627,6 +4015,7 @@ char *
 engine_next_fnargs (const char *engine_name, char *name)
 {
   engine_t *engine;
+
   if (!(engine = engine_get (engine_name)))
     return 0;
 
@@ -3640,6 +4029,7 @@ engine_next_fnargs (const char *engine_name, char *name)
   else
   {
     fnargs_t *f;
+
     for (f = engine->fnargs; f; f = f->next)
       if (!strcmp (f->name, name))
       {
@@ -3663,10 +4053,12 @@ int
 engine_fnargs_set_nb_args (const char *engine_name, const char *function_name, int nb_args_min, int nb_args_max)
 {
   engine_t *engine;
+
   if (!(engine = engine_get (engine_name)))
     return 0;
 
   fnargs_t *f;
+
   for (f = engine->fnargs; f && strcmp (function_name, f->name); f = f->next)
     /* nothing */ ;
 
@@ -3679,6 +4071,7 @@ engine_fnargs_set_nb_args (const char *engine_name, const char *function_name, i
   if (nb_args_max && nb_args_min > nb_args_max)
   {                             // swap
     int t = nb_args_min;
+
     nb_args_min = nb_args_max;
     nb_args_max = t;
   }
@@ -3697,6 +4090,7 @@ engine_load_library (const char *engine_name, const char *filename)
   library_t **thelib;
 
   engine_t *engine;
+
   if (!engine_name)
     thelib = &theLibraries;
   else if (!(engine = engine_get (engine_name)))
@@ -3705,6 +4099,7 @@ engine_load_library (const char *engine_name, const char *filename)
     thelib = &engine->libraries;
 
   void *handler = dlopen (filename, RTLD_LAZY);
+
   if (!handler)
   {
     formula_on_message (engine_name, filename, MSG_ERROR, 0, "Dynamic library could not be loaded.");
@@ -3719,6 +4114,7 @@ engine_load_library (const char *engine_name, const char *filename)
     }
 
   library_t *newlib = malloc (sizeof (*newlib));
+
   CHECK_ALLOC (newlib);
   newlib->next = *thelib;
   newlib->handler = handler;
@@ -3735,6 +4131,7 @@ char *
 engine_next_library (const char *engine_name, char *name)
 {
   engine_t *engine;
+
   if (!(engine = engine_get (engine_name)))
     return 0;
 
@@ -3748,6 +4145,7 @@ engine_next_library (const char *engine_name, char *name)
   else
   {
     library_t *f;
+
     for (f = engine->libraries; f; f = f->next)
       if (!strcmp (f->filename, name))
       {
@@ -3774,10 +4172,12 @@ internal_engine_add_symbol (const char *engine_name, const char *symbol_name, sy
   {
     dlerror ();                 /* Clear any existing error */
     void *symbol = dlsym (lib->handler, symbol_name);
+
     if (!dlerror ())
     {
       switch (type)
       {
+
 /*****************
 * C99 standard leaves casting from "void *" to a function pointer undefined.
 * The assignment "*(void **) (&f) = symbol ;" used below is the
@@ -3804,6 +4204,7 @@ internal_engine_add_symbol (const char *engine_name, const char *symbol_name, sy
         case CONSTANT:
         {
           double *val;
+
           val = symbol;
           return engine_add_constant (engine_name, symbol_name, *val);
         }
@@ -3811,6 +4212,7 @@ internal_engine_add_symbol (const char *engine_name, const char *symbol_name, sy
         case F0ARGS:
         {
           double (*f) ();
+
           *(void **) (&f) = symbol;
           return engine_add_f0arg (engine_name, symbol_name, f);
         }
@@ -3818,6 +4220,7 @@ internal_engine_add_symbol (const char *engine_name, const char *symbol_name, sy
         case F1ARG:
         {
           double (*f) (double);
+
           *(void **) (&f) = symbol;
           return engine_add_f1arg (engine_name, symbol_name, f);
         }
@@ -3825,6 +4228,7 @@ internal_engine_add_symbol (const char *engine_name, const char *symbol_name, sy
         case F2ARGS:
         {
           double (*f) (double, double);
+
           *(void **) (&f) = symbol;
           return engine_add_f2args (engine_name, symbol_name, f);
         }
@@ -3832,6 +4236,7 @@ internal_engine_add_symbol (const char *engine_name, const char *symbol_name, sy
         case F3ARGS:
         {
           double (*f) (double, double, double);
+
           *(void **) (&f) = symbol;
           return engine_add_f3args (engine_name, symbol_name, f);
         }
@@ -3856,6 +4261,7 @@ int
 engine_add_symbol (const char *engine_name, const char *symbol_name, symbol_type type)
 {
   engine_t *engine;
+
   if (!symbol_name || !(engine = engine_get (engine_name)))
     return 0;
 
@@ -3879,6 +4285,7 @@ engine_add_formula (const char *engine_name, const char *variable_name, const ch
     return 0;
 
   engine_t *engine;
+
   if (!(engine = engine_get (engine_name)))
     return 0;
 
@@ -3914,6 +4321,7 @@ engine_remove_formula (const char *engine_name, const char *formula)
     return 0;
 
   formula_t *form = engine_identifier_get (engine_name, formula);
+
   if (form)
   {
     formula_set (form, UNDEF);
@@ -3930,6 +4338,7 @@ char *
 engine_next_formula (const char *engine_name, char *name)
 {
   engine_t *engine;
+
   if (!(engine = engine_get (engine_name)) || !engine->formulae)
     return 0;
 
@@ -3938,6 +4347,7 @@ engine_next_formula (const char *engine_name, char *name)
   else
   {
     formula_t *f;
+
     for (f = engine->formulae; f; f = f->next)
       if (!strcmp (f->variable_name, name))
       {
@@ -3969,6 +4379,7 @@ engine_inject_command_FILE (const char *engine_name, FILE * f, prompt_handler pr
     echo = noecho;
 
   char *line = 0;
+
   while (prompt (), mygetline (f, &line), echo (line), line)
     if (!read_command_line (engine_name, line))
       formula_on_message (engine_name, line, MSG_ERROR, 0, "Invalid command line.");
@@ -3983,6 +4394,7 @@ int
 engine_inject_command_file (const char *engine_name, const char *filename, prompt_handler prompt, echo_handler echo)
 {
   FILE *f = fopen (filename, "r");
+
   if (!f)
   {
     formula_on_message (engine_name, filename, MSG_ERROR, 0, "Could not open file for reading.");
@@ -4014,6 +4426,7 @@ engine_read_file_description (const char *engine_name, const char *filename, int
   } action = NONE_ACTION;
 
   FILE *f = fopen (filename, "r");
+
   if (!f)
   {
     formula_on_message (engine_name, filename, MSG_ERROR, 0, "Could not open file for reading.");
@@ -4145,10 +4558,12 @@ void
 engine_recalculate_all (const char *engine_name)
 {
   engine_t *engine;
+
   if (!(engine = engine_get (engine_name)))
     return;
 
   int automatic = engine->automatic_calculation;
+
   engine->automatic_calculation = 1;
 
   for (formula_t * formula = engine->formulae; formula; formula = formula->next)
@@ -4175,6 +4590,7 @@ identifier_set (const char *engine_name, const char *identifier, value_t val)
    */
 
   char *endptr;
+
   if (!form && isid (identifier, &endptr) && *endptr == 0)
   {
     engine_add_formula (engine_name, identifier, 0, 0);
@@ -4214,6 +4630,7 @@ int
 identifier_get (const char *engine_name, const char *identifier, value_t * const val)
 {
   formula_t *form = engine_identifier_get (engine_name, identifier);
+
   if (form)
     return formula_get (form, val);
   else
@@ -4229,6 +4646,7 @@ int
 identifier_set_min_range (const char *engine_name, const char *identifier, double value)
 {
   formula_t *form = engine_identifier_get (engine_name, identifier);
+
   if (form)
   {
     if (!form->min_range)
@@ -4248,6 +4666,7 @@ int
 identifier_set_max_range (const char *engine_name, const char *identifier, double value)
 {
   formula_t *form = engine_identifier_get (engine_name, identifier);
+
   if (form)
   {
     if (!form->max_range)
@@ -4267,9 +4686,11 @@ int
 identifier_alert_add (const char *engine_name, const char *identifier, double min, double max, const char *message)
 {
   formula_t *form = engine_identifier_get (engine_name, identifier);
+
   if (form)
   {
     alert_t *al = malloc (sizeof (*al));
+
     CHECK_ALLOC (al);
 
     al->message = mystrdup (message);
@@ -4282,6 +4703,7 @@ identifier_alert_add (const char *engine_name, const char *identifier, double mi
     else
     {
       alert_t *nal;
+
       for (nal = form->alerts; nal->next; nal = nal->next)
         /* nothing */ ;
 
@@ -4303,6 +4725,7 @@ void
 engine_tree (const char *engine_name, int print_values)
 {
   engine_t *engine;
+
   if (!(engine = engine_get (engine_name)))
     return;
 
@@ -4310,6 +4733,7 @@ engine_tree (const char *engine_name, int print_values)
   for (formula_t * form = engine->formulae; form; form = form->next)
   {
     int isRoot = 1;
+
     for (formula_t * form2 = engine->formulae; form2 && isRoot; form2 = form2->next)
     {
       if (form2 != form)
@@ -4335,9 +4759,11 @@ engine_minimize (const char *engine_name, const char *variable_to_minimize, size
   }
 
   va_list ap;
+
   va_start (ap, freedom_size);
 
   const char **vargs = malloc (freedom_size * sizeof (*vargs));
+
   CHECK_ALLOC (vargs);
   for (int i = 0; i < freedom_size; i++)
     vargs[i] = va_arg (ap, char *);
@@ -4364,14 +4790,17 @@ engine_rootfind (const char *engine_name, size_t size, ...)
   }
 
   va_list ap;
+
   va_start (ap, size);
 
   const char **fargs = malloc (size * sizeof (*fargs));
+
   CHECK_ALLOC (fargs);
   for (int i = 0; i < size; i++)
     fargs[i] = va_arg (ap, char *);
 
   const char **xargs = malloc (size * sizeof (*xargs));
+
   CHECK_ALLOC (xargs);
   for (int i = 0; i < size; i++)
     xargs[i] = va_arg (ap, char *);

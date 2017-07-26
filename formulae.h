@@ -64,6 +64,7 @@ typedef struct
   enum
   {
     NUMBER,
+    INTEGER,
     STRING,
     DATE_TIME,
     UNDEFINED,
@@ -71,6 +72,7 @@ typedef struct
   union
   {
     double number;
+    long int integer;
     char *string;
     struct tm date_time;
   } value;
@@ -81,14 +83,18 @@ typedef struct
 **************************************************************/
 /* argument 'arg' is of type 'value' */
 #define IS_NUMBER(arg) ((arg).type == NUMBER)
+#define IS_INTEGER(arg) ((arg).type == INTEGER)
 #define IS_STRING(arg) ((arg).type == STRING)
 #define IS_DATE_TIME(arg) ((arg).type == DATE_TIME)
 #define IS_VALUED(arg) ((arg).type != UNDEFINED)
+
 #define GET_NUMBER(arg) ((arg).value.number)
+#define GET_INTEGER(arg) ((arg).value.integer)
 #define GET_STRING(arg) ((arg).value.string)
 #define GET_DATE_TIME(arg) ((arg).value.date_time)
 
 extern value_t MAKE_NUMBER (double v);
+extern value_t MAKE_INTEGER (long int v);
 extern value_t MAKE_STRING (char *v);
 extern value_t MAKE_DATE_TIME (struct tm v);
 extern value_t MAKE_UNDEFINED ();

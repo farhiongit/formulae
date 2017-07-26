@@ -43,6 +43,8 @@ print_value (const char *engine_name, const char *variable_name, value_t value)
 {
   if (IS_NUMBER (value))
     printf ("%s:%s = %g (number)\n", engine_name, variable_name, GET_NUMBER (value));
+  else if (IS_INTEGER (value))
+    printf ("%s:%s = %li (integer)\n", engine_name, variable_name, GET_INTEGER (value));
   else if (IS_STRING (value))
     printf ("%s:%s = \"%s\" (string)\n", engine_name, variable_name, GET_STRING (value));
   else if (IS_DATE_TIME (value))
