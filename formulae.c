@@ -1930,6 +1930,8 @@ formula_free (formula_t * expr, int reparse)
   }
 }
 
+static int formula_parse (formula_t * const expr);
+
 static int
 formula_get (formula_t * const form, value_t * const value)
 {
@@ -1938,6 +1940,13 @@ formula_get (formula_t * const form, value_t * const value)
     formula_on_message (form->engine->name, form->formula, MSG_WARNING, 0, "'%s': Not valued yet.", form->formula);
     return 0;
   }
+
+  // Updates value of formula
+  int automatic = form->engine->automatic_calculation;
+
+  form->engine->automatic_calculation = 1;
+  ASSERT ((formula_parse (form)), 0);
+  form->engine->automatic_calculation = automatic;
 
   if (value)
     *value = form->value;
@@ -1981,8 +1990,6 @@ formula_depends_on (formula_t * const form, const char *variable)
 *                      (parents) <---- formula_changed <----'              *
 *                                                                          *
 ***************************************************************************/
-
-static int formula_parse (formula_t * const expr);
 
 static void
 formula_changed (formula_t * const expr)
@@ -2174,20 +2181,18 @@ static double
 myrandom ()
 {
   static int myrandomisinit = 0;
-
-  struct drand48_data buffer;
+  static struct drand48_data buffer;
 
   if (!myrandomisinit)
   {
     srand48_r (time (0), &buffer);
     myrandomisinit = 1;
   }
+
   double ret = 0;
 
   drand48_r (&buffer, &ret);
   return ret;
-
-  //return 1.0 * rand () / RAND_MAX;
 }
 
 static double
@@ -3247,6 +3252,8 @@ identifier_print (const char *engine_name, const char *identifier, int nbtabs, i
 
   if (form)
   {
+    formula_get (form, 0);      // Updates value of formula
+
     char base_format[50] = "";
     char message[50] = "";
 
@@ -4789,7 +4796,6 @@ engine_recalculate_all (const char *engine_name)
   }
 
   engine->automatic_calculation = automatic;
-
 }
 
 /*********************************************************************/
