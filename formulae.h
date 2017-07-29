@@ -1,3 +1,4 @@
+
 /*
  * formulae: a recursive interpretor of formulae (à la Excel)
  * Copyright (C) 2017 L. Farhi (lrspam at sfr.fr)
@@ -21,6 +22,7 @@
 #define FP_VERSION    "1.0"
 #define FP_AUTHOR     "Laurent FARHI"
 #define FP_COPYRIGHT  "Copyright (c) 2010"
+
 /***********************************************/
 
 /***********************************************************************
@@ -73,7 +75,7 @@ typedef struct
   {
     double number;
     long int integer;
-    char *string;
+    char *string;               // TODO: use wchar_t
     struct tm date_time;
   } value;
 } value_t;
@@ -81,6 +83,7 @@ typedef struct
 /**************************************************************
 *                          TOOLS                              *
 **************************************************************/
+
 /* argument 'arg' is of type 'value' */
 #define IS_NUMBER(arg) ((arg).type == NUMBER)
 #define IS_INTEGER(arg) ((arg).type == INTEGER)
@@ -103,8 +106,10 @@ extern value_t MAKE_UNDEFINED ();
 *             ON FORMULA CHANGED HANDLERS MANAGER             *
 **************************************************************/
 typedef void (*formula_changed_handler) (const char *engine_name, const char *variable_name, value_t value);
+
 // Adds a new handler to engine
 extern void formula_changed_handler_add (formula_changed_handler);
+
 // Removes a new handler to engine
 extern void formula_changed_handler_remove (formula_changed_handler);
 
@@ -116,6 +121,7 @@ typedef void (*formula_msg_handler) (const char *engine_name,
                                      const char *msg, formula_msg_severity severity, unsigned int depth);
 // Adds a new handler to engine
 extern void formula_msg_handler_add (formula_msg_handler);
+
 // Removes a new handler to engine
 extern void formula_msg_handler_remove (formula_msg_handler);
 
@@ -189,6 +195,7 @@ typedef void (*prompt_handler) ();
 typedef const char *(*echo_handler) (const char *);
 
 extern int engine_inject_command_FILE (const char *engine_name, FILE * f, prompt_handler, echo_handler);
+
 // Calls engine_inject for each line read from file filename
 extern int engine_inject_command_file (const char *engine_name, const char *filename, prompt_handler, echo_handler);
 

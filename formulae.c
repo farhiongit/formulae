@@ -59,7 +59,7 @@ typedef struct list_of_constants
 typedef struct list_of_f_0_arg
 {
   char *name;
-  double (*value) ();
+  double (*value) ();           //TODO: change it to value_t
 
   struct list_of_f_0_arg *next;
 } f0arg_t;
@@ -223,8 +223,8 @@ typedef struct token
 /**************************************************************
 *                     GLOBALS CONSTANTS                       *
 **************************************************************/
-static const value_t ZERO = { INTEGER, {0L} };
-static const value_t ONE = { INTEGER, {1L} };
+static const value_t ZERO = { INTEGER, {.integer = 0L} };
+static const value_t ONE = { INTEGER, {.integer = 1L} };
 static const value_t UNDEF = { UNDEFINED, {0.} };
 
 /**************************************************************
@@ -645,8 +645,6 @@ If expr->value is equal to UNDEF, syntax is checked but formula is not evaluated
 static int
 isid (const char *nptr, char **endptr)
 {
-  //TODO: accept 'value("<string>")' (GET_VALUE_FUNCTION)
-
   if (isalpha (*nptr) || *nptr == '_')  // An identifier can start with character '_'
   {
     while (isalnum (*nptr) || *nptr == '_')     // An identifier can contain character '_'
@@ -662,8 +660,6 @@ isid (const char *nptr, char **endptr)
     return 0;
   }
 }
-
-static void fake_localtimeinUTC (struct tm *d);
 
 /* LEXER */
 
@@ -768,8 +764,6 @@ get_token (formula_t * const expr)
         struct tm v;
 
         tm_maketoday (&v);
-
-        fake_localtimeinUTC (&v);
 
         char *saveptr, *tok;
 
@@ -969,6 +963,7 @@ parse_primary (formula_t * const expr)
                  strlen (GET_VALUE_FUNCTION) == tok.attribute.id.end - tok.attribute.id.begin &&
                  !strncmp (GET_VALUE_FUNCTION, tok.attribute.id.begin, tok.attribute.id.end - tok.attribute.id.begin))
         {                       // Special uniary function 'value'
+          //TODO: accept value(<comparison>)
           found = 1;
           if (!IS_VALUED (args[0]))
             /* nothing */ ;
@@ -1543,8 +1538,6 @@ parse_expression (formula_t * const expr)
           }
           else if (IS_INTEGER (left) && IS_INTEGER (right))
             GET_INTEGER (left) += GET_INTEGER (right);
-          else if (IS_DATE_TIME (left) && IS_NUMBER (right))
-            tm_addseconds (&GET_DATE_TIME (left), 24 * 60 * 60 * GET_NUMBER (right));
           else if (IS_DATE_TIME (left) && IS_INTEGER (right))
             tm_addseconds (&GET_DATE_TIME (left), 24 * 60 * 60 * GET_INTEGER (right));
           else
@@ -1570,12 +1563,10 @@ parse_expression (formula_t * const expr)
 
         if (IS_VALUED (expr->value))
         {
-          if (IS_DATE_TIME (left) && IS_NUMBER (right))
-            tm_addseconds (&GET_DATE_TIME (left), -24 * 60 * 60 * GET_NUMBER (right));
-          else if (IS_DATE_TIME (left) && IS_INTEGER (right))
+          if (IS_DATE_TIME (left) && IS_INTEGER (right))
             tm_addseconds (&GET_DATE_TIME (left), -24 * 60 * 60 * GET_INTEGER (right));
           else if (IS_DATE_TIME (left) && IS_DATE_TIME (right))
-            left = MAKE_NUMBER (1. * tm_diffseconds (GET_DATE_TIME (right), GET_DATE_TIME (left)) / 24. / 60. / 60.);
+            left = MAKE_INTEGER (tm_diffdays (GET_DATE_TIME (right), GET_DATE_TIME (left), 0));
           else if (IS_NUMBER (left) && IS_NUMBER (right))
             GET_NUMBER (left) -= GET_NUMBER (right);
           else if (IS_NUMBER (left) && IS_INTEGER (right))
@@ -2171,7 +2162,7 @@ formula_parse (formula_t * const expr)
   if (IS_VALUED (expr->value))  // Avoids recursive infinite loop with formula_parse
     formula_set (expr, expr->value);
   else                          // UNDEF
-    formula_changed (expr);
+    formula_changed (expr);     // The recursive stuff is here
 
   return 1;
 }
@@ -2211,22 +2202,108 @@ sqr (double x)
   return x * x;
 }
 
-static double
-max (double x, double y)
+static value_t
+max (int nbArgs, const value_t * const args)
 {
-  if (x < y)
-    return y;
-  else
-    return x;
+  if (!nbArgs)
+    return UNDEF;
+
+  int type = args[0].type;
+  value_t max = args[0];
+
+  switch (type)
+  {
+    case INTEGER:
+      for (int iarg = 1; iarg < nbArgs; iarg++)
+      {
+        if (args[iarg].type != type)
+          return UNDEF;
+        if (GET_INTEGER (args[iarg]) > GET_INTEGER (max))
+          max = args[iarg];
+      }
+      return MAKE_INTEGER (GET_INTEGER (max));
+    case NUMBER:
+      for (int iarg = 1; iarg < nbArgs; iarg++)
+      {
+        if (args[iarg].type != type)
+          return UNDEF;
+        if (GET_NUMBER (args[iarg]) > GET_NUMBER (max))
+          max = args[iarg];
+      }
+      return MAKE_NUMBER (GET_NUMBER (max));
+    case STRING:
+      for (int iarg = 1; iarg < nbArgs; iarg++)
+      {
+        if (args[iarg].type != type)
+          return UNDEF;
+        if (strcmp (GET_STRING (args[iarg]), GET_STRING (max)) > 0)
+          max = args[iarg];
+      }
+      return MAKE_STRING (GET_STRING (max));
+    case DATE_TIME:
+      for (int iarg = 1; iarg < nbArgs; iarg++)
+      {
+        if (args[iarg].type != type)
+          return UNDEF;
+        if (tm_diffseconds (GET_DATE_TIME (args[iarg]), GET_DATE_TIME (max)) < 0)
+          max = args[iarg];
+      }
+      return MAKE_DATE_TIME (GET_DATE_TIME (max));
+    default:
+      return UNDEF;
+  }
 }
 
-static double
-min (double x, double y)
+static value_t
+min (int nbArgs, const value_t * const args)
 {
-  if (x < y)
-    return x;
-  else
-    return y;
+  if (!nbArgs)
+    return UNDEF;
+
+  int type = args[0].type;
+  value_t min = args[0];
+
+  switch (type)
+  {
+    case INTEGER:
+      for (int iarg = 1; iarg < nbArgs; iarg++)
+      {
+        if (args[iarg].type != type)
+          return UNDEF;
+        if (GET_INTEGER (args[iarg]) < GET_INTEGER (min))
+          min = args[iarg];
+      }
+      return MAKE_INTEGER (GET_INTEGER (min));
+    case NUMBER:
+      for (int iarg = 1; iarg < nbArgs; iarg++)
+      {
+        if (args[iarg].type != type)
+          return UNDEF;
+        if (GET_NUMBER (args[iarg]) < GET_NUMBER (min))
+          min = args[iarg];
+      }
+      return MAKE_NUMBER (GET_NUMBER (min));
+    case STRING:
+      for (int iarg = 1; iarg < nbArgs; iarg++)
+      {
+        if (args[iarg].type != type)
+          return UNDEF;
+        if (strcmp (GET_STRING (args[iarg]), GET_STRING (min)) < 0)
+          min = args[iarg];
+      }
+      return MAKE_STRING (GET_STRING (min));
+    case DATE_TIME:
+      for (int iarg = 1; iarg < nbArgs; iarg++)
+      {
+        if (args[iarg].type != type)
+          return UNDEF;
+        if (tm_diffseconds (GET_DATE_TIME (args[iarg]), GET_DATE_TIME (min)) > 0)
+          min = args[iarg];
+      }
+      return MAKE_DATE_TIME (GET_DATE_TIME (min));
+    default:
+      return UNDEF;
+  }
 }
 
 static value_t
@@ -2364,7 +2441,7 @@ to_number (int nbArgs, const value_t * const args)
 static value_t
 round_number (int nbArgs, const value_t * const args)
 {
-  if (nbArgs < 1)
+  if (nbArgs != 1)
     return UNDEF;
 
   if (IS_NUMBER (args[0]))
@@ -2373,6 +2450,140 @@ round_number (int nbArgs, const value_t * const args)
     return args[0];
   else
     return UNDEF;
+}
+
+static value_t
+diff_dates (int nbArgs, const value_t * const args)
+{
+  if (nbArgs < 2 || nbArgs > 3 || !IS_DATE_TIME (args[0]) || !IS_DATE_TIME (args[1]))
+    return UNDEF;
+
+  if (nbArgs == 3 && (!IS_STRING (args[2]) || strlen (GET_STRING (args[2])) != 1))
+    return UNDEF;
+
+  char c = nbArgs == 3 ? GET_STRING (args[2])[0] : 'D';
+
+  struct tm begin = GET_DATE_TIME (args[0]);
+  struct tm end = GET_DATE_TIME (args[1]);
+  long int diff = 0;
+
+  switch (c)
+  {
+    case 'Y':
+      diff = tm_diffyears (begin, end, 0, 0, 0);
+      break;
+    case 'M':
+      diff = tm_diffmonths (begin, end, 0, 0);
+      break;
+    case 'D':
+      diff = tm_diffdays (begin, end, 0);
+      break;
+    case 'h':
+      diff = tm_diffseconds (begin, end) / 3600;
+      break;
+    case 'm':
+      diff = tm_diffseconds (begin, end) / 60;
+      break;
+    case 's':
+      diff = tm_diffseconds (begin, end);
+      break;
+  }
+
+  return MAKE_INTEGER (diff);
+}
+
+static value_t
+date_add (int nbArgs, const value_t * const args)
+{
+  if (nbArgs < 2 || nbArgs > 3 || !IS_DATE_TIME (args[0]) || !IS_INTEGER (args[1]))
+    return UNDEF;
+
+  if (nbArgs == 3 && (!IS_STRING (args[2]) || strlen (GET_STRING (args[2])) != 1))
+    return UNDEF;
+
+  char c = nbArgs == 3 ? GET_STRING (args[2])[0] : 'D';
+
+  struct tm begin = GET_DATE_TIME (args[0]);
+  long int diff = GET_INTEGER (args[1]);
+  struct tm end = begin;
+
+  switch (c)
+  {
+    case 'Y':
+      tm_addyears (&end, diff);
+      break;
+    case 'M':
+      tm_addmonths (&end, diff);
+      break;
+    case 'W':
+      tm_adddays (&end, 7 * diff);
+      break;
+    case 'D':
+      tm_adddays (&end, diff);
+      break;
+    case 'h':
+      tm_addseconds (&end, diff * 3600);
+      break;
+    case 'm':
+      tm_addseconds (&end, diff * 60);
+      break;
+    case 's':
+      tm_addseconds (&end, diff);
+      break;
+  }
+
+  return MAKE_DATE_TIME (end);
+}
+
+static value_t
+date_attribute (int nbArgs, const value_t * const args)
+{
+  if (nbArgs != 2 || !IS_DATE_TIME (args[0]) || !IS_STRING (args[1]))
+    return UNDEF;
+
+  char *arg = GET_STRING (args[1]);
+
+  if (!strcmp (arg, "Y"))       // year
+    return MAKE_INTEGER (tm_getyear (GET_DATE_TIME (args[0])));
+  else if (!strcmp (arg, "M"))  // month
+    return MAKE_INTEGER (tm_getmonth (GET_DATE_TIME (args[0])));
+  else if (!strcmp (arg, "D"))  // day of month
+    return MAKE_INTEGER (tm_getday (GET_DATE_TIME (args[0])));
+  else if (!strcmp (arg, "h"))  // hour of day
+    return MAKE_INTEGER (tm_gethour (GET_DATE_TIME (args[0])));
+  else if (!strcmp (arg, "m"))  // minutes of hour
+    return MAKE_INTEGER (tm_getminute (GET_DATE_TIME (args[0])));
+  else if (!strcmp (arg, "s"))  // seconds of minute
+    return MAKE_INTEGER (tm_getsecond (GET_DATE_TIME (args[0])));
+  else if (!strcmp (arg, "sD")) // seconds of day
+    return MAKE_INTEGER (tm_getsecondsofday (GET_DATE_TIME (args[0])));
+  else if (!strcmp (arg, "IY")) // ISO-year
+    return MAKE_INTEGER (tm_getisoyear (GET_DATE_TIME (args[0])));
+  else if (!strcmp (arg, "IW")) // ISO-week
+    return MAKE_INTEGER (tm_getisoweek (GET_DATE_TIME (args[0])));
+  else if (!strcmp (arg, "DW")) // day of week
+    return MAKE_INTEGER (tm_getdayofweek (GET_DATE_TIME (args[0])));
+  else if (!strcmp (arg, "DY")) // day of year
+    return MAKE_INTEGER (tm_getdayofyear (GET_DATE_TIME (args[0])));
+  else
+    return UNDEF;
+}
+
+static value_t
+date (int nbArgs, const value_t * const args)
+{
+  if (nbArgs != 6)
+    return UNDEF;
+
+  for (int iarg = 0; iarg < nbArgs; iarg++)
+    if (!IS_INTEGER (args[iarg]))
+      return UNDEF;
+
+  struct tm instant;
+
+  tm_makelocal (&instant, GET_INTEGER (args[0]), GET_INTEGER (args[1]), GET_INTEGER (args[2]), GET_INTEGER (args[3]),
+                GET_INTEGER (args[4]), GET_INTEGER (args[5]));
+  return MAKE_DATE_TIME (instant);
 }
 
 static value_t
@@ -2470,20 +2681,6 @@ to_string (int nbArgs, const value_t * const args)
   return __MAKE_STRING (v, 0);
 }
 
-static void
-fake_localtimeinUTC (struct tm *d)
-{
-  // Note: as arithmetics with dates use decimal values
-  // (differences between dates are measured in days and fractions of days),
-  // fractions of days that should should represent consistant number of hours.
-  // Thus, each day should last 24 hours, ignoring daylight saving time.
-  // Therefore, dates are managed in UTC, but 'now' pretends to be local anyway.
-  // That's dishonest but is also as Microsoft Excel behaves internally !!
-  // For local dates being managed correctly, arithmetics should not use decimals.
-  tm_addseconds (d, tm_getutcoffset (*d));
-  tm_toutcrepresentation (d);
-}
-
 static value_t
 now (int nbArgs, const value_t * const args)
 {
@@ -2493,8 +2690,6 @@ now (int nbArgs, const value_t * const args)
   struct tm d;
 
   tm_makenow (&d);
-
-  fake_localtimeinUTC (&d);
 
   return MAKE_DATE_TIME (d);
 }
@@ -2509,10 +2704,12 @@ today (int nbArgs, const value_t * const args)
 
   tm_maketoday (&d);
 
-  fake_localtimeinUTC (&d);
-
   return MAKE_DATE_TIME (d);
 }
+
+// TODO: LOOP i=i..j..k <id(i)> = formula(i)>
+// TODO: identifier=search(i=1..3..19;<condition(i)>;<expression(i)>)
+// TODO: args(i=i..j..k ; <formula(i)>), returns a list of value_t
 
 /**************************************************************
 *                      ENGINES MANAGER                        *
@@ -3373,6 +3570,7 @@ read_command_line (const char *engine_name, char *command_line)
 
   char *endptr = 0;
 
+  //TODO: accept value (GET_VALUE_FUNCTION)
   if (isid (command_line, &endptr))
   {
     if (*endptr == 0)
@@ -3399,6 +3597,7 @@ read_command_line (const char *engine_name, char *command_line)
         *endptr = 0;
         endptr++;
       }
+      // Here, command_line is the name of the variable, and endptr is the expression.
       if (engine_add_formula (engine_name, command_line, endptr, 0))
         return 1;
       else
@@ -3482,8 +3681,12 @@ engine_open (const char *engine_name)
 
   engine_add_f2args (engine_name, "mod", fmod);
   engine_add_f2args (engine_name, "pow", pow);
-  engine_add_f2args (engine_name, "min", min);
-  engine_add_f2args (engine_name, "max", max);
+
+  engine_add_fnargs (engine_name, "min", min);
+  engine_fnargs_set_nb_args (engine_name, "min", 1, 0);
+
+  engine_add_fnargs (engine_name, "max", max);
+  engine_fnargs_set_nb_args (engine_name, "max", 1, 0);
 
   engine_add_fnargs (engine_name, "if", iiff);
   engine_fnargs_set_nb_args (engine_name, "if", 3, 3);
@@ -3502,6 +3705,18 @@ engine_open (const char *engine_name)
 
   engine_add_fnargs (engine_name, "round", round_number);
   engine_fnargs_set_nb_args (engine_name, "round", 1, 1);
+
+  engine_add_fnargs (engine_name, "diff_dates", diff_dates);
+  engine_fnargs_set_nb_args (engine_name, "diff_dates", 2, 3);
+
+  engine_add_fnargs (engine_name, "add_to_date", date_add);
+  engine_fnargs_set_nb_args (engine_name, "add_dates", 2, 3);
+
+  engine_add_fnargs (engine_name, "date_attribute", date_attribute);
+  engine_fnargs_set_nb_args (engine_name, "get_date", 2, 2);
+
+  engine_add_fnargs (engine_name, "date", date);
+  engine_fnargs_set_nb_args (engine_name, "date", 6, 6);
 
   engine_add_fnargs (engine_name, "to_string", to_string);
   engine_fnargs_set_nb_args (engine_name, "to_string", 1, 5);
