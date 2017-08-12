@@ -1,6 +1,6 @@
-aa=2*bb
-SET aa 11
-a=cos(2)
-b=2*a+1+pi
-c=2*a+p*b
+aa=2,*bb
+SET aa 11,
+a=cos(2,)
+b=2,*a+1+pi
+c=2,*a+p*b
 d=b+c+a

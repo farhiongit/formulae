@@ -65,11 +65,11 @@ typedef struct
 {
   enum
   {
+    UNDEFINED = 0,
     NUMBER,
     INTEGER,
     STRING,
     DATE_TIME,
-    UNDEFINED,
   } type;
   union
   {
@@ -85,11 +85,12 @@ typedef struct
 **************************************************************/
 
 /* argument 'arg' is of type 'value' */
+#define IS_VALUED(arg) ((arg).type != UNDEFINED)
+
 #define IS_NUMBER(arg) ((arg).type == NUMBER)
 #define IS_INTEGER(arg) ((arg).type == INTEGER)
 #define IS_STRING(arg) ((arg).type == STRING)
 #define IS_DATE_TIME(arg) ((arg).type == DATE_TIME)
-#define IS_VALUED(arg) ((arg).type != UNDEFINED)
 
 #define GET_NUMBER(arg) ((arg).value.number)
 #define GET_INTEGER(arg) ((arg).value.integer)
@@ -169,9 +170,9 @@ extern void engine_recalculate_all (const char *engine_name);
 **************************************************************/
 extern int identifier_get (const char *engine_name, const char *identifier, value_t * const value);
 extern int identifier_set (const char *engine_name, const char *identifier, value_t value);
-extern int identifier_set_min_range (const char *engine_name, const char *identifier, double value);
-extern int identifier_set_max_range (const char *engine_name, const char *identifier, double value);
-extern int identifier_alert_add (const char *engine_name, const char *identifier, double min, double max,
+extern int identifier_set_min_range (const char *engine_name, const char *identifier, value_t value);
+extern int identifier_set_max_range (const char *engine_name, const char *identifier, value_t value);
+extern int identifier_alert_add (const char *engine_name, const char *identifier, value_t min, value_t max,
                                  const char *message);
 
 /**************************************************************
@@ -194,10 +195,10 @@ extern int engine_add_symbol (const char *engine_name, const char *symbol, symbo
 typedef void (*prompt_handler) ();
 typedef const char *(*echo_handler) (const char *);
 
-extern int engine_inject_command_FILE (const char *engine_name, FILE * f, prompt_handler, echo_handler);
+extern int engine_read_command_FILE (const char *engine_name, FILE * f, prompt_handler, echo_handler);
 
 // Calls engine_inject for each line read from file filename
-extern int engine_inject_command_file (const char *engine_name, const char *filename, prompt_handler, echo_handler);
+extern int engine_read_command_file (const char *engine_name, const char *filename, prompt_handler, echo_handler);
 
 extern int engine_read_file_description (const char *engine_name, const char *filename, int check_syntax_only);
 

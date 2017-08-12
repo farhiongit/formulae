@@ -29,9 +29,11 @@ fn (int nbArgs, const value_t * const args)
   if (IS_STRING (args[0]))
   {
     char *str = malloc ((2 * strlen (GET_STRING (args[0])) + 1) * sizeof (*str));
+
     strcpy (str, GET_STRING (args[0]));
     strcat (str, GET_STRING (args[0]));
     value_t ret = MAKE_STRING (str);
+
     free (str);
     return ret;
   }

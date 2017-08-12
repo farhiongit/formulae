@@ -1,5 +1,5 @@
 #CC				= gcc
-CC				= clang -ferror-limit=0
+CC				= clang -ferror-limit=5
 #CC				= tcc
 #CC				= pcc -g -O -I/usr/local/include -I/usr/include/linux -I/usr/local/include/c++/4.4.2 -I/usr/local/include/c++/4.4.2/* -D_DEBUG -Wl,-r/usr/local/lib 
 WARNINGS	= -Wall -pedantic -Werror -pedantic-errors
@@ -8,7 +8,7 @@ CSTD      = #-std=c99
 DEBUG		 = -g
 #PROC_OPT        = -march=i686
 LD_OPT		= -s
-CFLAGS  = $(TEMP) $(DEBUG) $(WARNINGS) $(COMPILE) $(PROC_OPT) $(CSTD) -I../tools -I../dates
+CFLAGS  = $(TEMP) $(DEBUG) $(WARNINGS) $(COMPILE) $(PROC_OPT) $(CSTD) -I../tools -I../dates -I/usr/share/gnulib/lib
 LDFLAGS  = -L../dates -static
 
 all: formulae dl_test.so.1.0

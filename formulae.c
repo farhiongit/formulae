@@ -5,6 +5,12 @@
  */
 #define _GNU_SOURCE
 
+// TODO value_free et value = UNDEF
+// TODO get rid of mystrdup, mystrndup, getopts, mygetline (use POSIX instead)
+// ERROR when
+// b=-a
+// a="a"
+
 #include <strings.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,6 +24,7 @@
 #include <gsl_multimin.h>
 #include <gsl/gsl_multiroots.h>
 #include <dlfcn.h>
+#include <intprops.h>
 
 #include "getopts.h"
 #include "formulae.h"
@@ -26,6 +33,7 @@
 #define CHECK_ALLOC(ptr) \
   ASSERT(ptr, "Memory allocation error")
 
+// ASSERT is already defined in ../tools/getopts.h
 #if 0
 #define ASSERT(cond,msg) \
   do {\
@@ -115,7 +123,7 @@ typedef struct list_of_dependencies
 
 typedef struct list_of_alerts
 {
-  double min_value, max_value;  //TODO (date_time): change it to value_t
+  value_t min_value, max_value;
   char *message;
 
   struct list_of_alerts *next;
@@ -131,8 +139,8 @@ typedef struct list_of_formulae
   int circular_dependencies;
   alert_t *alerts;
   value_t value;
-  double *min_range;            //TODO (date_time): change it to value_t
-  double *max_range;            //TODO (date_time): change it to value_t
+  value_t min_range;
+  value_t max_range;
   char *pos;
   char *previous_pos;
   int notify_change;
@@ -216,16 +224,16 @@ typedef struct token
   union
   {
     value_t value;              // for a VALUE
-    fragment_t id;              // for an IDENTIFIER
+    fragment_t id;              // for an IDENTIFIER (fragment of the formula)
   } attribute;
 } token_t;
 
 /**************************************************************
 *                     GLOBALS CONSTANTS                       *
 **************************************************************/
-static const value_t ZERO = { INTEGER, {.integer = 0L} };
-static const value_t ONE = { INTEGER, {.integer = 1L} };
-static const value_t UNDEF = { UNDEFINED, {0.} };
+static const value_t ZERO = {.type = INTEGER,.value = {.integer = 0L} };
+static const value_t ONE = {.type = INTEGER,.value = {.integer = 1L} };
+static const value_t UNDEF = {.type = UNDEFINED,.value = {.number = 0.} };
 
 /**************************************************************
 *                     GLOBALS VARIABLES                       *
@@ -239,6 +247,7 @@ static formula_changed_handler_t *formulaOnChangeHandlers;
 /**************************************************************
 *                          TOOLS                              *
 **************************************************************/
+//TODO: use strdup
 static char *const
 mystrdup (const char *s)
 {
@@ -257,6 +266,7 @@ mystrdup (const char *s)
   return ret;
 }
 
+//TODO: use strndup
 static char *
 mystrndup (const char *s, size_t n)
 {
@@ -280,6 +290,7 @@ mystrndup (const char *s, size_t n)
 
 /*************************************************************/
 
+//TODO: use getline
 static char *
 mygetline (const FILE * f, char **lineptr)
 {
@@ -373,14 +384,17 @@ MAKE_STRING (char *v)
   return __MAKE_STRING (v, 1);
 }
 
+// 'polymorphic' free value
 static void
-value_free (value_t v)
+value_free (value_t * v)
 {
-  if (IS_STRING (v))
+  if (IS_STRING (*v))
   {
-    CHECK_ALLOC (GET_STRING (v));
-    free (GET_STRING (v));
+    CHECK_ALLOC (GET_STRING (*v));
+    free (GET_STRING (*v));
   }
+
+  *v = UNDEF;
 }
 
 static value_t
@@ -397,13 +411,24 @@ value_dup (value_t v)
   return ret;
 }
 
-#if 0
+//__attribute__ ((__unused__))
+static value_t
+value_move (value_t * v)
+{
+  value_t ret = *v;
+
+  *v = UNDEF;
+
+  return ret;
+}
+
+//__attribute__ ((__unused__))
 static int
 value_cmp (value_t a, value_t b)
 {
-  if (a.type != b.type)
-    return 1;
-  else if (IS_NUMBER (a))
+  ASSERT (a.type == b.type, "Could not compare values of different type.");
+
+  if (IS_NUMBER (a))
     return (GET_NUMBER (a) > GET_NUMBER (b) ? 1 : (GET_NUMBER (a) < GET_NUMBER (b) ? -1 : 0));
   else if (IS_INTEGER (a))
     return (GET_INTEGER (a) > GET_INTEGER (b) ? 1 : (GET_INTEGER (a) < GET_INTEGER (b) ? -1 : 0));
@@ -411,14 +436,32 @@ value_cmp (value_t a, value_t b)
   {
     long int d = tm_diffseconds (GET_DATE_TIME (a), GET_DATE_TIME (b));
 
-    return d > 0 ? 1 : d < 0 ? -1 : 0;
+    return d > 0 ? -1 : d < 0 ? 1 : 0;
   }
   else if (IS_STRING (a))
     return strcmp (GET_STRING (a), GET_STRING (b));
 
   return 0;
 }
-#endif
+
+static value_t _f_to_string (int nbArgs, const value_t * const args);
+
+//__attribute__ ((__unused__))
+static char *
+value_to_string (value_t val)
+{
+  static value_t ret;
+
+  value_free (&ret);
+  value_t str = _f_to_string (1, &val);
+
+  ret = value_move (&str);
+
+  if (IS_STRING (ret))
+    return GET_STRING (ret);
+  else
+    return 0;
+}
 
 /**************************************************************
 *                 MESSAGE HANDLERS MANAGER                    *
@@ -576,10 +619,461 @@ formula_on_change (const char *engine_name, const char *variable_name, value_t v
 }
 
 /**************************************************************
+*                      FORMULAE MANAGER                       *
+**************************************************************/
+
+/*
+expr->pos is set to 0 if syntax is incorrect.
+expr->value is set to UNDEF if elements of formula are undefined or can not be evaluated.
+If expr->value is equal to UNDEF, syntax is checked but formula is not evaluated (for optimization purpose).
+*/
+
+static void
+formula_invalidate (formula_t * const expr)
+{
+  expr->pos = 0;                // Invalidate token, next token_get will return token NONE
+}
+
+static int
+formula_isvalid (formula_t * const expr)
+{
+  return expr->pos != 0;
+}
+
+static void formula_changed (const formula_t * const expr);
+
+static void
+formula_unset (formula_t * const form)
+{
+  if (IS_VALUED (form->value))
+  {
+    value_free (&form->value);
+    formula_changed (form);
+  }
+}
+
+static formula_t *
+formula_allocate (const char *variable_name, const char *formula_string)
+{
+  formula_t *expr = malloc (sizeof (*expr));
+
+  CHECK_ALLOC (expr);
+
+  expr->variable_name = mystrdup (variable_name);
+  expr->formula = mystrdup (formula_string);
+  expr->dependencies = 0;
+  expr->alerts = 0;
+  expr->pos = expr->formula;
+  expr->value = UNDEF;
+  expr->notify_change = 0;
+  expr->engine = 0;
+  expr->next = 0;
+  expr->min_range = UNDEF;
+  expr->max_range = UNDEF;
+  expr->circular_dependencies = 0;
+
+  return expr;
+}
+
+static void
+formula_free (formula_t * expr, int reparse)
+{
+  // argument "reparse" : if reparse, prepare formula for reparsing : free data before update
+  // formula_free(expr, 0) can be called to remove formula 'expr' from engine it belongs to.
+
+  if (!expr)
+    return;
+
+  formula_unset (expr);
+
+  dependency_t *ndep;
+
+  for (dependency_t * dep = expr->dependencies; dep; dep = ndep)
+  {
+    ndep = dep->next;
+    free (dep->variable_name);
+    free (dep);
+  }
+  expr->dependencies = 0;
+  expr->circular_dependencies = 0;
+
+  if (!reparse)
+  {
+    if (expr->variable_name)
+      free (expr->variable_name);
+    expr->variable_name = 0;
+
+    if (expr->formula)
+      free (expr->formula);
+    expr->formula = 0;
+
+    value_free (&expr->min_range);
+    value_free (&expr->max_range);
+
+    alert_t *nal;
+
+    for (alert_t * al = expr->alerts; al; al = nal)
+    {
+      nal = al->next;
+      if (al->message)
+        free (al->message);
+      free (al);
+    }
+
+    if (expr->engine && expr->engine->formulae)
+    {
+      // Remove formula 'expr' from engine
+      formula_t *form = expr->engine->formulae; // 1st formula in the list
+
+      if (form == expr)
+        expr->engine->formulae = expr->next;
+      else
+        while (form->next)
+          if (form->next == expr)
+            form->next = expr->next;
+          else
+            form = form->next;
+    }
+
+    expr->next = 0;
+    expr->engine = 0;
+
+    free (expr);
+  }                             // if (!reparse)
+}
+
+static int formula_parse (formula_t * const expr);
+
+static int
+formula_get (formula_t * const form, value_t * const value)
+{
+#if 0
+  if (!IS_VALUED (form->value))
+  {
+    formula_on_message (form->engine->name, form->formula, MSG_WARNING, 0, "'%s': Not valued yet.", form->formula);
+    return 0;
+  }
+#endif
+
+  // Updates value of formula
+  int automatic = form->engine->automatic_calculation;
+
+  form->engine->automatic_calculation = 1;      //TODO: necessary ?
+  ASSERT ((formula_parse (form)), 0);
+  form->engine->automatic_calculation = automatic;
+
+  if (value)
+    *value = form->value;
+
+  return 1;
+}
+
+static int
+formula_depends_on (formula_t * const form, const char *variable)
+{
+  if (!variable || !form || !form->engine)
+    return 0;
+
+  for (dependency_t * dep = form->dependencies; dep; dep = dep->next)
+  {
+    if (!strcmp (dep->variable_name, variable))
+      return 1;
+
+    formula_t *f;
+
+    for (f = form->engine->formulae; f && (strcmp (f->variable_name, dep->variable_name)); f = f->next)
+      /* nothing */ ;
+
+    if (f && (f == form || f->circular_dependencies || formula_depends_on (f, variable)))
+      return 1;
+  }
+
+  return 0;
+}
+
+/***************************************************************************
+* When a variable is changed, all variables refering to it are re-computed *
+*                                                                          *
+* Recursive scheme:                                                        *
+*                                                                          *
+*       (formula) ----> formula_parse = UNDEF? --(No)--> formula_set       *
+*                          ^               |                |              *
+*                          |             (Yes)              |              *
+*                          |               |                |              *
+*                          |               v                |              *
+*                      (parents) <---- formula_changed <----'              *
+*                                                                          *
+***************************************************************************/
+
+static void
+formula_changed (const formula_t * const expr)
+{
+  if (!expr || !expr->engine || !expr->variable_name)
+    return;
+
+  //formula_on_message (expr->engine->name, expr->formula, MSG_INFO, 0, "%s: changed.", expr->variable_name);
+
+  if (IS_VALUED (expr->value))
+  {
+    if (expr->notify_change && !expr->engine->quiet)
+      formula_on_change (expr->engine->name, expr->variable_name, expr->value);
+
+    for (alert_t * al = expr->alerts; al; al = al->next)
+      if (
+           // NUMBER
+           (IS_NUMBER (expr->value)
+            && (!IS_NUMBER (al->min_value) || GET_NUMBER (al->min_value) <= GET_NUMBER (expr->value))
+            && (!IS_NUMBER (al->max_value) || GET_NUMBER (expr->value) <= GET_NUMBER (al->max_value))) ||
+           // INTEGER
+           (IS_INTEGER (expr->value)
+            && (!IS_INTEGER (al->min_value) || GET_INTEGER (al->min_value) <= GET_INTEGER (expr->value))
+            && (!IS_INTEGER (al->max_value) || GET_INTEGER (expr->value) <= GET_INTEGER (al->max_value))) ||
+           // STRING
+           (IS_STRING (expr->value)
+            && (!IS_STRING (al->min_value) || strcmp (GET_STRING (al->min_value), GET_STRING (expr->value)) <= 0)
+            && (!IS_STRING (al->max_value) || strcmp (GET_STRING (expr->value), GET_STRING (al->max_value)) <= 0)) ||
+           // DATE_TIME
+           (IS_DATE_TIME (expr->value)
+            && (!IS_DATE_TIME (al->min_value)
+                || tm_diffseconds (GET_DATE_TIME (al->min_value), GET_DATE_TIME (expr->value)) >= 0)
+            && (!IS_DATE_TIME (al->max_value)
+                || tm_diffseconds (GET_DATE_TIME (expr->value), GET_DATE_TIME (al->max_value)) >= 0)) ||
+           //
+           0)
+        formula_on_message (expr->engine->name, expr->variable_name, MSG_INFO, 0, al->message);
+  }                             // if (IS_VALUED (expr->value))
+  else if (expr->notify_change && !expr->engine->quiet) // && !IS_VALUED (expr->value)
+    formula_on_change (expr->engine->name, expr->variable_name, UNDEF); // quiet NaN is implementation dependent
+
+  // Recalculate all formulae which depend on expr
+  if (IS_VALUED (expr->value))  // TODO: check if not restrictive here
+    if (expr->engine->automatic_calculation)
+      for (formula_t * form = expr->engine->formulae; form; form = form->next)
+        if (form != expr)
+          for (dependency_t * dep = form->dependencies; dep; dep = dep->next)
+            if (!strcmp (dep->variable_name, expr->variable_name))
+            {
+              //if (expr->engine->automatic_notification)
+              //expr->notify_change = 0 ;  // notify only leafs changes
+
+              if ( /* IS_VALUED (expr->value) || */ IS_VALUED (form->value))    // TODO: check
+                ASSERT ((formula_parse (form)), 0);     // The recursive stuff is here
+              break;
+            }
+}
+
+static int
+formula_set (formula_t * const form, value_t value)
+{
+  int assign = 0;
+
+  switch (value.type)
+  {
+    case NUMBER:
+      if (IS_NUMBER (form->min_range) && GET_NUMBER (value) < GET_NUMBER (form->min_range))
+        formula_on_message (form->engine->name, form->variable_name, MSG_WARNING, 0, "'%s': Out of range (< %g).",
+                            form->formula, GET_NUMBER (form->min_range));
+      else if (IS_NUMBER (form->max_range) && GET_NUMBER (value) > GET_NUMBER (form->max_range))
+        formula_on_message (form->engine->name, form->variable_name, MSG_WARNING, 0, "'%s': Out of range (> %g).",
+                            form->formula, GET_NUMBER (form->max_range));
+      else
+        assign = 1;
+      break;
+    case INTEGER:
+      if (IS_INTEGER (form->min_range) && GET_INTEGER (value) < GET_INTEGER (form->min_range))
+        formula_on_message (form->engine->name, form->variable_name, MSG_WARNING, 0, "'%s': Out of range (< %li).",
+                            form->formula, GET_INTEGER (form->min_range));
+      else if (IS_INTEGER (form->max_range) && GET_INTEGER (value) > GET_INTEGER (form->max_range))
+        formula_on_message (form->engine->name, form->variable_name, MSG_WARNING, 0, "'%s': Out of range (> %li).",
+                            form->formula, GET_INTEGER (form->max_range));
+      else
+        assign = 1;
+      break;
+    case DATE_TIME:
+    {
+      char datestr[200];
+
+      if (IS_DATE_TIME (form->min_range) && tm_diffseconds (GET_DATE_TIME (value), GET_DATE_TIME (form->min_range)) > 0)
+      {
+        strftime (datestr, sizeof (datestr) / sizeof (*datestr), "%X %x", &GET_DATE_TIME (form->min_range));
+        formula_on_message (form->engine->name, form->variable_name, MSG_WARNING, 0, "'%s': Out of range (< '%s').",
+                            form->formula, datestr);
+      }
+      else if (IS_DATE_TIME (form->max_range)
+               && tm_diffseconds (GET_DATE_TIME (value), GET_DATE_TIME (form->max_range)) < 0)
+      {
+        strftime (datestr, sizeof (datestr) / sizeof (*datestr), "%X %x", &GET_DATE_TIME (form->max_range));
+        formula_on_message (form->engine->name, form->variable_name, MSG_WARNING, 0, "'%s': Out of range (> '%s').",
+                            form->formula, datestr);
+      }
+      else
+        assign = 1;
+      break;
+    }
+    case STRING:
+      if (IS_STRING (form->min_range) && strcmp (GET_STRING (value), GET_STRING (form->min_range)) < 0)
+        formula_on_message (form->engine->name, form->variable_name, MSG_WARNING, 0, "'%s': Out of range (< \"%s\").",
+                            form->formula, GET_STRING (form->min_range));
+      else if (IS_STRING (form->max_range) && strcmp (GET_STRING (value), GET_STRING (form->max_range)) > 0)
+        formula_on_message (form->engine->name, form->variable_name, MSG_WARNING, 0, "'%s': Out of range (> \"%s\").",
+                            form->formula, GET_STRING (form->max_range));
+      else
+        assign = 1;
+      break;
+    case UNDEFINED:
+    default:
+      break;
+  }
+
+  if (assign)
+  {
+    if (value_cmp (form->value, value))
+      /**/ ;
+    {
+      value = value_dup (value);        // Value is duplicated
+      formula_unset (form);
+      form->value = value;
+      formula_changed (form);
+    }
+  }
+  else
+    formula_unset (form);
+
+  return !IS_VALUED (value) || IS_VALUED (form->value);
+}
+
+static value_t parse_comparison (formula_t * const expr);
+static token_t token_get (formula_t * const expr);
+
+/**************************************************************
 *                       FORMULAE PARSER                       *
 **************************************************************/
 
-/* Grammar:
+/* Parser entry point */
+static int
+formula_parse (formula_t * const expr)
+{
+  if (!expr)
+    return 0;
+
+  if (!expr->formula)           // if formula is reduced to 0 (that is the case after identifier_set has been called)
+    /* nothing */ ;
+  else                          // if (expr->formula)
+  {
+    formula_free (expr, 1);     // prepare formula for reparsing : free data before update
+    expr->pos = expr->formula;
+    expr->value = ZERO;         // Initialize value before calling parse_comparison.
+    expr->value = parse_comparison (expr);
+
+    token_t token = token_get (expr);
+
+    if (token.type != END)
+    {
+      switch (token.type)
+      {
+        case IDENTIFIER:
+          formula_on_message (expr->engine->name, expr->formula, MSG_ERROR, 0,
+                              "'%s': Unexpected identifier uncountered.", expr->formula);
+          break;
+        case VALUE:
+          value_free (&token.attribute.value);
+          formula_on_message (expr->engine->name, expr->formula, MSG_ERROR, 0, "'%s': Unexpected value uncountered.",
+                              expr->formula);
+          break;
+        case PLUS:
+        case MINUS:
+        case MULTIPLY:
+        case DIVIDE:
+        case EQ:
+        case LHPAREN:
+        case RHPAREN:
+        case LHBRACKET:
+        case RHBRACKET:
+        case ARG_SEP:
+        case LT:
+        case GT:
+          formula_on_message (expr->engine->name, expr->variable_name, MSG_ERROR, 0,
+                              "'%s': Unexpected '%c' uncountered.", expr->formula, token.type);
+          break;
+        default:
+          formula_on_message (expr->engine->name, expr->variable_name, MSG_ERROR, 0,
+                              "'%s': Unexpected end of formula uncountered.", expr->formula);
+          break;
+      }
+      formula_on_message (expr->engine->name, expr->variable_name, MSG_ERROR, 0, "'%s': At '%s'.", expr->formula,
+                          expr->previous_pos);
+      //formula_free(expr, 1) ;
+      formula_unset (expr);
+      return 0;                 // Formula end expected. The formula is not added to the engine.
+    }                           // token.type != END
+
+    if (expr->variable_name && formula_depends_on (expr, expr->variable_name))
+    {
+      expr->circular_dependencies = 1;
+      formula_on_message (expr->engine->name, expr->variable_name, MSG_WARNING, 0, "'%s': Circular reference.",
+                          expr->formula);
+      formula_unset (expr);
+    }
+  }                             // if (expr->formula)
+
+  /* Adding the formula to the engine */
+  if (expr->engine && expr->variable_name)
+  {
+    // Add the formula in the engine
+    formula_t *form = 0;
+
+    for (form = expr->engine->formulae; form && form != expr; form = form->next)
+      /* nothing */ ;
+
+    if (!form)                  // the formula is not in the engine yet
+    {
+      formula_t *previous = 0;
+
+      for (form = expr->engine->formulae; form && strcmp (form->variable_name, expr->variable_name); form = form->next)
+        previous = form;
+
+      if (form)
+      {
+        // The engine already contains another formula with the same variable name -> it is replaced by the new one.
+        // Replace 'form' by 'expr' in the list 'expr->engine->formulae' (type formula_t).
+        if (form->dependencies)
+          formula_on_message (form->engine->name, form->variable_name, MSG_WARNING, 0, "'%s': Overwritten !",
+                              form->formula);
+        expr->next = form->next;
+        if (previous)
+          previous->next = expr;
+        else
+          expr->engine->formulae = expr;
+
+        formula_free (form, 0); // 'form is not needed anymore
+      }
+      else
+      {
+        // Adding the formula at the beginning of the list 'expr->engine->formulae' (type formula_t).
+        expr->next = expr->engine->formulae;
+        expr->engine->formulae = expr;
+      }
+    }                           // The formula is not in the engine yet
+  }                             // Adding the formula to the engine
+
+#if 1
+  formula_set (expr, expr->value);      // Controls that the value is in the valid range for formula expr
+#endif
+
+#if 0
+  // TODO: check what is this code for
+  if (IS_VALUED (expr->value))  // Avoids recursive infinite loop with formula_parse
+    formula_set (expr, expr->value);    // Controls that the value is in the valid range for formula expr
+  else                          // UNDEF
+    formula_changed (expr);     // The recursive stuff is here
+#endif
+
+  return 1;
+}
+
+/********************************************************************
+ LEXER
+ Grammar:
 %tokens%
 
   IDENTIFIER
@@ -634,13 +1128,7 @@ VALUE = <number>
 UnaryFunction = IDENTIFIER "(" Expression ")" ;
 
 BinaryFunction = IDENTIFIER "(" Expression ";" Expression ")" ;
-*/
-
-/*
-expr->pos is set to 0 if syntax is incorrect.
-expr->value is set to UNDEF if elements of formula are undefined or can not be evaluated.
-If expr->value is equal to UNDEF, syntax is checked but formula is not evaluated (for optimization purpose).
-*/
+***************************************************************/
 
 static int
 isid (const char *nptr, char **endptr)
@@ -661,16 +1149,14 @@ isid (const char *nptr, char **endptr)
   }
 }
 
-/* LEXER */
-
 /* Token factory */
 static token_t
-get_token (formula_t * const expr)
+token_get (formula_t * const expr)
 {
   token_t token;
 
   token.type = NONE;
-  if (!expr || !expr->pos)
+  if (!expr || !formula_isvalid (expr))
     return token;
 
   expr->previous_pos = expr->pos;
@@ -754,7 +1240,7 @@ get_token (formula_t * const expr)
         length++;
 
       if (!*((expr->pos) + length + 1))
-        formula_on_message (expr->engine->name, expr->variable_name, MSG_ERROR, 0, "'%s': Missing \'.", expr->formula);
+        formula_on_message (expr->engine->name, expr->variable_name, MSG_ERROR, 0, "'%s': Missing '.", expr->formula);
       else
       {
         char *s = strndup (expr->pos + 1, length);
@@ -771,7 +1257,7 @@ get_token (formula_t * const expr)
           formula_on_message (expr->engine->name, expr->variable_name, MSG_ERROR, 0, "'%s': Incorrect date %s.",
                               expr->formula, s);
         else if ((tok = strtok_r (0, " ", &saveptr)) != 0 && tm_settimefromstring (&v, tok) != TM_OK)
-          formula_on_message (expr->engine->name, expr->variable_name, MSG_ERROR, 0, "'%s': Incorrect date %s.",
+          formula_on_message (expr->engine->name, expr->variable_name, MSG_ERROR, 0, "'%s': Incorrect time %s.",
                               expr->formula, s);
         else
         {
@@ -781,6 +1267,7 @@ get_token (formula_t * const expr)
           token.attribute.value = MAKE_DATE_TIME (v);
           return token;
         }
+
         free (s);
       }
     }
@@ -823,33 +1310,34 @@ get_token (formula_t * const expr)
     }
   }
 
-  expr->pos = 0;                // Invalid token, next get_token will return token NONE
-  value_free (expr->value);
-  expr->value = UNDEF;
+  formula_invalidate (expr);
+  //value_free (&expr->value);
+  formula_unset (expr);
   formula_on_message (expr->engine->name, expr->variable_name, MSG_ERROR, 0, "'%s': Syntax error.", expr->formula);
   return token;                 // NONE
 }
 
 static void
-unget_token (formula_t * const expr)
+token_unget (formula_t * const expr)
 {
   if (expr)
     expr->pos = expr->previous_pos;
 }
 
-/* PARSER */
-static value_t parse_comparison (formula_t * const expr);
+/**************************************************************
+*                       FORMULAE PARSER                       *
+**************************************************************/
 
 /* Parse primary */
 static value_t
 parse_primary (formula_t * const expr)
 {
-  token_t tok = get_token (expr);
+  token_t tok = token_get (expr);
 
-  if (!expr || !expr->pos)
+  if (!expr || !formula_isvalid (expr))
   {
     if (tok.type == VALUE)
-      value_free (tok.attribute.value);
+      value_free (&tok.attribute.value);
     return UNDEF;
   }
 
@@ -871,18 +1359,25 @@ parse_primary (formula_t * const expr)
         }
         else if (IS_INTEGER (ret) && IS_VALUED (expr->value))
         {
-          GET_INTEGER (ret) = -GET_INTEGER (ret);
-          return ret;
+          if (INT_NEGATE_OVERFLOW (GET_INTEGER (ret)))
+            /* TODO */ ASSERT (0, 0);
+          // same as out of range
+          else
+          {
+            GET_INTEGER (ret) = -GET_INTEGER (ret);
+            return ret;
+          }
         }
         else
         {
           formula_on_message (expr->engine->name, expr->variable_name, MSG_ERROR, 0,
                               "'%s': Operator '-' applied to something not a number.", expr->formula);
-          value_free (ret);
+          formula_unset (expr);
+          value_free (&ret);
         }
       }
-      else
-        return ret;
+
+      return ret;
       break;
     }
     case VALUE:
@@ -891,15 +1386,15 @@ parse_primary (formula_t * const expr)
     case LHPAREN:
     {
       value_t value = parse_comparison (expr);
-      token_t t = get_token (expr);
+      token_t t = token_get (expr);
 
       if (t.type != RHPAREN)
       {
         if (t.type == VALUE)
-          value_free (t.attribute.value);
+          value_free (&t.attribute.value);
         formula_on_message (expr->engine->name, expr->variable_name, MSG_ERROR, 0,
                             "'%s': Missing right hand parenthesis.", expr->formula);
-        value_free (value);
+        value_free (&value);
       }
       else
         return value;
@@ -908,15 +1403,15 @@ parse_primary (formula_t * const expr)
     case LHBRACKET:
     {
       value_t value = parse_comparison (expr);
-      token_t t = get_token (expr);
+      token_t t = token_get (expr);
 
       if (t.type != RHBRACKET)
       {
         if (t.type == VALUE)
-          value_free (t.attribute.value);
+          value_free (&t.attribute.value);
         formula_on_message (expr->engine->name, expr->variable_name, MSG_ERROR, 0,
                             "'%s': Missing right hand bracket.", expr->formula);
-        value_free (value);
+        value_free (&value);
       }
       else
         return value;
@@ -924,7 +1419,7 @@ parse_primary (formula_t * const expr)
     }
     case IDENTIFIER:
     {
-      token_t tpar = get_token (expr);
+      token_t tpar = token_get (expr);
 
       if (tpar.type == LHPAREN) // An identifier followed by a left-hand parenthesis should be a function name.
       {
@@ -934,12 +1429,13 @@ parse_primary (formula_t * const expr)
         value_t *args = 0;
         unsigned int nbArgs = 0;
 
-        if ((t = get_token (expr)).type != RHPAREN)
+        if ((t = token_get (expr)).type != RHPAREN)
         {
           if (t.type == VALUE)
-            value_free (t.attribute.value);
-          unget_token (expr);
+            value_free (&t.attribute.value);
+          token_unget (expr);
 
+          // TODO: args(i=i..j..k ; <formula(i)>), returns a list of value_t
           do
           {
             value_t arg = parse_comparison (expr);
@@ -948,9 +1444,9 @@ parse_primary (formula_t * const expr)
             args = realloc (args, nbArgs * sizeof (*args));
             CHECK_ALLOC (args);
             args[nbArgs - 1] = arg;
-            t = get_token (expr);
+            t = token_get (expr);
             if (t.type == VALUE)
-              value_free (t.attribute.value);
+              value_free (&t.attribute.value);
           }
           while (t.type == ARG_SEP);
         }
@@ -962,8 +1458,8 @@ parse_primary (formula_t * const expr)
         else if (nbArgs == 1 &&
                  strlen (GET_VALUE_FUNCTION) == tok.attribute.id.end - tok.attribute.id.begin &&
                  !strncmp (GET_VALUE_FUNCTION, tok.attribute.id.begin, tok.attribute.id.end - tok.attribute.id.begin))
-        {                       // Special uniary function 'value'
-          //TODO: accept value(<comparison>)
+        {                       // Special unary function 'value'
+          //TODO: accept value(<comparison> returning a string as an identifier)
           found = 1;
           if (!IS_VALUED (args[0]))
             /* nothing */ ;
@@ -1003,6 +1499,7 @@ parse_primary (formula_t * const expr)
                    dep && (strlen (dep->variable_name) != strlen (GET_STRING (args[0]))
                            || strcmp (dep->variable_name, GET_STRING (args[0]))); dep = dep->next)
                 /* nothing */ ;
+
               if (!dep)
               {
                 dependency_t *new_dep = malloc (sizeof (*new_dep));
@@ -1022,10 +1519,10 @@ parse_primary (formula_t * const expr)
           }
           //The identifier has no value yet
           if (!IS_VALUED (returned_value))
-            expr->value = UNDEF;
+            value_free (&expr->value);
         }
 
-        else
+        else                    // not function value
         {
           fnargs_t *fn = 0;
 
@@ -1035,6 +1532,7 @@ parse_primary (formula_t * const expr)
                 strncmp (fn->name, tok.attribute.id.begin, tok.attribute.id.end - tok.attribute.id.begin));
                fn = fn->next)
             /* nothing */ ;
+
           if (fn)
           {
             if (fn->nbArgs.min < 0)
@@ -1055,14 +1553,14 @@ parse_primary (formula_t * const expr)
               found = 1;
 
             if (!found)
-               /**/;
+              /* nothing */ ;
             else if (!IS_VALUED (expr->value))
-               /**/;
+              /* nothing */ ;
             else if (IS_NUMBER (returned_value = fn->value (nbArgs, args)) && isnan (GET_NUMBER (returned_value)))
             {
               formula_on_message (expr->engine->name, expr->variable_name, MSG_WARNING, 0,
                                   "'%s': Function %s: argument out of range.", expr->formula, fn->name);
-              expr->value = UNDEF;
+              formula_unset (expr);
             }
           }
           else
@@ -1078,18 +1576,19 @@ parse_primary (formula_t * const expr)
                             strncmp (f0->name, tok.attribute.id.begin, tok.attribute.id.end - tok.attribute.id.begin));
                      f0 = f0->next)
                   /* nothing */ ;
+
                 if (f0)
                 {
                   found = 1;
                   if (!IS_VALUED (expr->value))
-                     /**/;
+                    /* nothing */ ;
                   else if (!isnan (f0->value ()))
                     returned_value = MAKE_NUMBER (f0->value ());
                   else
                   {
                     formula_on_message (expr->engine->name, expr->variable_name, MSG_WARNING, 0,
                                         "'%s': Function %s: not a number.", expr->formula, f0->name);
-                    expr->value = UNDEF;
+                    formula_unset (expr);
                   }
                 }
                 break;
@@ -1103,6 +1602,7 @@ parse_primary (formula_t * const expr)
                             strncmp (f1->name, tok.attribute.id.begin, tok.attribute.id.end - tok.attribute.id.begin));
                      f1 = f1->next)
                   /* nothing */ ;
+
                 if (f1)
                 {
                   found = 1;
@@ -1110,10 +1610,10 @@ parse_primary (formula_t * const expr)
                   {
                     formula_on_message (expr->engine->name, expr->variable_name, MSG_WARNING, 0,
                                         "'%s': Function %s: argument is not a number.", expr->formula, f1->name);
-                    expr->value = UNDEF;
+                    formula_unset (expr);
                   }
                   else if (!IS_VALUED (expr->value))
-                     /**/;
+                    /* nothing */ ;
                   else if (!isnan (f1->value (GET_NUMBER (args[0]))))
                     returned_value = MAKE_NUMBER (f1->value (GET_NUMBER (args[0])));
                   else
@@ -1121,7 +1621,7 @@ parse_primary (formula_t * const expr)
                     formula_on_message (expr->engine->name, expr->variable_name, MSG_WARNING, 0,
                                         "'%s': Function %s: argument (%g) out of range.", expr->formula, f1->name,
                                         GET_NUMBER (args[0]));
-                    expr->value = UNDEF;
+                    formula_unset (expr);
                   }
                 }
                 break;
@@ -1135,6 +1635,7 @@ parse_primary (formula_t * const expr)
                             strncmp (f2->name, tok.attribute.id.begin, tok.attribute.id.end - tok.attribute.id.begin));
                      f2 = f2->next)
                   /* nothing */ ;
+
                 if (f2)
                 {
                   found = 1;
@@ -1142,10 +1643,10 @@ parse_primary (formula_t * const expr)
                   {
                     formula_on_message (expr->engine->name, expr->variable_name, MSG_WARNING, 0,
                                         "'%s': Function %s: argument is not a number.", expr->formula, f2->name);
-                    expr->value = UNDEF;
+                    formula_unset (expr);
                   }
                   else if (!IS_VALUED (expr->value))
-                     /**/;
+                    /* nothing */ ;
                   else if (!isnan (f2->value (GET_NUMBER (args[0]), GET_NUMBER (args[1]))))
                     returned_value = MAKE_NUMBER (f2->value (GET_NUMBER (args[0]), GET_NUMBER (args[1])));
                   else
@@ -1153,7 +1654,7 @@ parse_primary (formula_t * const expr)
                     formula_on_message (expr->engine->name, expr->variable_name, MSG_WARNING, 0,
                                         "'%s': Function %s: arguments (%g, %g) out of range.", expr->formula, f2->name,
                                         GET_NUMBER (args[0]), GET_NUMBER (args[1]));
-                    expr->value = UNDEF;
+                    formula_unset (expr);
                   }
                 }
                 break;
@@ -1167,6 +1668,7 @@ parse_primary (formula_t * const expr)
                             strncmp (f3->name, tok.attribute.id.begin, tok.attribute.id.end - tok.attribute.id.begin));
                      f3 = f3->next)
                   /* nothing */ ;
+
                 if (f3)
                 {
                   found = 1;
@@ -1174,7 +1676,7 @@ parse_primary (formula_t * const expr)
                   {
                     formula_on_message (expr->engine->name, expr->variable_name, MSG_WARNING, 0,
                                         "'%s': Function %s: argument is not a number.", expr->formula, f3->name);
-                    expr->value = UNDEF;
+                    formula_unset (expr);
                   }
                   else if (!IS_VALUED (expr->value))
                     /* nothing */ ;
@@ -1186,7 +1688,7 @@ parse_primary (formula_t * const expr)
                     formula_on_message (expr->engine->name, expr->variable_name, MSG_WARNING, 0,
                                         "'%s': Function %s: argument (%g, %g, %g) out of range.", expr->formula,
                                         f3->name, GET_NUMBER (args[0]), GET_NUMBER (args[1]), GET_NUMBER (args[2]));
-                    expr->value = UNDEF;
+                    formula_unset (expr);
                   }
                 }
                 break;
@@ -1200,25 +1702,25 @@ parse_primary (formula_t * const expr)
               formula_on_message (expr->engine->name, expr->variable_name, MSG_ERROR,
                                   0, "'%s': Unknown function name %s with %i arguments.", expr->formula, fname, nbArgs);
               free (fname);
-              expr->value = UNDEF;
+              formula_unset (expr);
             }
           }
         }
 
         for (int iArg = 0; iArg < nbArgs; iArg++)
-          value_free (args[iArg]);
+          value_free (&args[iArg]);
         free (args);
         if (found)
           return returned_value;
         else
-          return returned_value;
-      }                         // if (get_token(expr).type == LHPAREN)
+          return returned_value;        // TODO: to be removed ?
+      }                         // if (token_get(expr).type == LHPAREN)
       else                      // if (tpar.type != LHPAREN)
       {
         if (tpar.type == VALUE)
-          value_free (tpar.attribute.value);
+          value_free (&tpar.attribute.value);
 
-        unget_token (expr);     // rewind, this is not a function name
+        token_unget (expr);     // rewind, this is not a function name
 
         // Is it a constant ?
         for (constant_t * c = expr->engine->constants; c; c = c->next)
@@ -1234,6 +1736,7 @@ parse_primary (formula_t * const expr)
                      strncmp (dep->variable_name, tok.attribute.id.begin,
                               tok.attribute.id.end - tok.attribute.id.begin)); dep = dep->next)
           /* nothing */ ;
+
         if (!dep)
         {
           dependency_t *new_dep = malloc (sizeof (*new_dep));
@@ -1244,6 +1747,7 @@ parse_primary (formula_t * const expr)
           new_dep->next = expr->dependencies;
           expr->dependencies = new_dep;
         }
+
         // Get the value of the identifier
         if (expr->engine)
           for (formula_t * formula = expr->engine->formulae; formula; formula = formula->next)
@@ -1253,7 +1757,7 @@ parse_primary (formula_t * const expr)
                              tok.attribute.id.end - tok.attribute.id.begin))
               return value_dup (formula->value);
 
-        expr->value = UNDEF;
+        formula_unset (expr);
         return UNDEF;           // The identifier has no value yet
       }
       break;
@@ -1263,8 +1767,8 @@ parse_primary (formula_t * const expr)
       break;
   }
 
-  expr->value = UNDEF;
-  expr->pos = 0;                // Invalidates formula
+  formula_unset (expr);
+  formula_invalidate (expr);
   formula_on_message (expr->engine->name, expr->variable_name, MSG_ERROR, 0, "'%s': Syntax error.", expr->formula);
   return UNDEF;
 }
@@ -1275,9 +1779,9 @@ parse_term (formula_t * const expr)
 {
   value_t left = parse_primary (expr);
 
-  if (!expr || !expr->pos)
+  if (!expr || !formula_isvalid (expr))
   {
-    value_free (left);
+    value_free (&left);
     return UNDEF;
   }
 
@@ -1287,7 +1791,7 @@ parse_term (formula_t * const expr)
     //      | Term '*' Primary ;
 
   {
-    token_t token = get_token (expr);
+    token_t token = token_get (expr);
 
     switch (token.type)
     {
@@ -1295,28 +1799,23 @@ parse_term (formula_t * const expr)
       {
         value_t right = parse_primary (expr);
 
-        if (IS_VALUED (expr->value))
+        if (IS_VALUED (expr->value))    // TODO: if (IS_VALUED (right))
         {
           if ((!IS_NUMBER (left) && !IS_INTEGER (left)) || (!IS_NUMBER (right) && !IS_INTEGER (right)))
           {
             formula_on_message (expr->engine->name, expr->formula, MSG_WARNING, 0, "'%s': Operation not allowed.",
                                 expr->formula);
-            expr->value = UNDEF;
-            value_free (left);
-            left = UNDEF;
+            formula_unset (expr);
+            value_free (&left);
           }
           else if (IS_INTEGER (left) && IS_INTEGER (right))
           {
-            // TODO: check for LONG_MIN and LONG_MAX overflow.
-            int overflow = 0;
-
-            if (overflow)
+            if (INT_MULTIPLY_OVERFLOW (GET_INTEGER (left), GET_INTEGER (right)))
             {
               formula_on_message (expr->engine->name, expr->formula, MSG_WARNING, 0, "'%s': Out of range (%li*%li).",
                                   expr->formula, GET_INTEGER (left), GET_INTEGER (right));
-              expr->value = UNDEF;
-              value_free (left);
-              left = UNDEF;
+              formula_unset (expr);
+              value_free (&left);
             }
             else
               GET_INTEGER (left) *= GET_INTEGER (right);
@@ -1328,13 +1827,13 @@ parse_term (formula_t * const expr)
 
             if (l == 0. || r == 0.)
             {
-              value_free (left);
+              value_free (&left);
               left.type = NUMBER;
               GET_NUMBER (left) = 0.;
             }
             else if (isnormal (l * r))
             {
-              value_free (left);
+              value_free (&left);
               left.type = NUMBER;
               GET_NUMBER (left) = l * r;
             }
@@ -1342,18 +1841,16 @@ parse_term (formula_t * const expr)
             {
               formula_on_message (expr->engine->name, expr->formula, MSG_WARNING, 0, "'%s': Out of range (%g*%g).",
                                   expr->formula, GET_NUMBER (left), GET_NUMBER (right));
-              expr->value = UNDEF;
-              value_free (left);
-              left = UNDEF;
+              formula_unset (expr);
+              value_free (&left);
             }
           }
         }
         else if (IS_VALUED (left))
-        {
-          value_free (left);
-          left = UNDEF;
-        }
-        value_free (right);
+          value_free (&left);
+
+        value_free (&right);
+        // No return here (we are in a loop). Return is in the default case.
         break;
       }
       case DIVIDE:
@@ -1366,9 +1863,8 @@ parse_term (formula_t * const expr)
           {
             formula_on_message (expr->engine->name, expr->formula, MSG_WARNING, 0, "'%s': Operation not allowed.",
                                 expr->formula);
-            expr->value = UNDEF;
-            value_free (left);
-            left = UNDEF;
+            formula_unset (expr);
+            value_free (&left);
           }
           else if (IS_INTEGER (left) && IS_INTEGER (right))
           {
@@ -1376,31 +1872,25 @@ parse_term (formula_t * const expr)
             {
               formula_on_message (expr->engine->name, expr->formula, MSG_WARNING, 0, "'%s': Division by zero.",
                                   expr->formula);
-              expr->value = UNDEF;
-              value_free (left);
-              left = UNDEF;
+              formula_unset (expr);
+              value_free (&left);
             }
-            else if (GET_INTEGER (left) % GET_INTEGER (right))
+            else if (!INT_REMAINDER_OVERFLOW (GET_INTEGER (left), GET_INTEGER (right))
+                     && GET_INTEGER (left) % GET_INTEGER (right))
             {
-              value_free (left);
+              value_free (&left);
               left.type = NUMBER;
               GET_NUMBER (left) = (1. * GET_INTEGER (left)) / (1. * GET_INTEGER (right));
             }
-            else
+            else if (INT_DIVIDE_OVERFLOW (GET_INTEGER (left), GET_INTEGER (right)))     // In case right == -1
             {
-              int overflow = 0;
-
-              if (overflow)     // In case right == -1
-              {
-                formula_on_message (expr->engine->name, expr->formula, MSG_WARNING, 0, "'%s': Out of range (%li*%li).",
-                                    expr->formula, GET_INTEGER (left), GET_INTEGER (right));
-                expr->value = UNDEF;
-                value_free (left);
-                left = UNDEF;
-              }
-              else
-                GET_INTEGER (left) /= GET_INTEGER (right);
+              formula_on_message (expr->engine->name, expr->formula, MSG_WARNING, 0, "'%s': Out of range (%li/%li).",
+                                  expr->formula, GET_INTEGER (left), GET_INTEGER (right));
+              formula_unset (expr);
+              value_free (&left);
             }
+            else
+              GET_INTEGER (left) /= GET_INTEGER (right);
           }
           else
           {
@@ -1411,19 +1901,18 @@ parse_term (formula_t * const expr)
             {
               formula_on_message (expr->engine->name, expr->formula, MSG_WARNING, 0, "'%s': Division by zero.",
                                   expr->formula);
-              expr->value = UNDEF;
-              value_free (left);
-              left = UNDEF;
+              formula_unset (expr);
+              value_free (&left);
             }
             else if (l == 0.)
             {
-              value_free (left);
+              value_free (&left);
               left.type = NUMBER;
               GET_NUMBER (left) = 0.;
             }
             else if (isnormal (l / r))
             {
-              value_free (left);
+              value_free (&left);
               left.type = NUMBER;
               GET_NUMBER (left) = l / r;
             }
@@ -1431,30 +1920,27 @@ parse_term (formula_t * const expr)
             {
               formula_on_message (expr->engine->name, expr->formula, MSG_WARNING, 0, "'%s': Out of range (%g/%g).",
                                   expr->formula, GET_NUMBER (left), GET_NUMBER (right));
-              expr->value = UNDEF;
-              value_free (left);
-              left = UNDEF;
+              formula_unset (expr);
+              value_free (&left);
             }
 
           }
         }
         else if (IS_VALUED (left))
-        {
-          value_free (left);
-          left = UNDEF;
-        }
-        value_free (right);
+          value_free (&left);
+
+        value_free (&right);
         break;
       }
       case NONE:
-        value_free (left);
+        value_free (&left);
         return UNDEF;
         break;
       case VALUE:
-        value_free (token.attribute.value);
+        value_free (&token.attribute.value);
         /* no break, drops through */
       default:
-        unget_token (expr);
+        token_unget (expr);
         return left;
         break;
     }
@@ -1467,9 +1953,9 @@ parse_expression (formula_t * const expr)
 {
   value_t left = parse_term (expr);
 
-  if (!expr || !expr->pos)
+  if (!expr || !formula_isvalid (expr))
   {
-    value_free (left);
+    value_free (&left);
     return UNDEF;
   }
 
@@ -1479,7 +1965,7 @@ parse_expression (formula_t * const expr)
     //            | Expression '-' Term ;
 
   {
-    token_t token = get_token (expr);
+    token_t token = token_get (expr);
 
     switch (token.type)
     {
@@ -1498,7 +1984,7 @@ parse_expression (formula_t * const expr)
               CHECK_ALLOC (v);
               strcpy (v, GET_STRING (left));
               strcat (v, GET_STRING (right));
-              value_free (left);
+              value_free (&left);
               left = __MAKE_STRING (v, 0);
             }
             else if (IS_INTEGER (right) && GET_INTEGER (right) >= 0)
@@ -1514,16 +2000,16 @@ parse_expression (formula_t * const expr)
                 CHECK_ALLOC (v);
                 snprintf (v, len, fmt, GET_STRING (left), GET_INTEGER (right));
               }
-              value_free (left);
+              value_free (&left);
               left = __MAKE_STRING (v, 0);
             }
             else
             {
               formula_on_message (expr->engine->name, expr->formula, MSG_WARNING, 0,
-                                  "'%s': Operation not allowed (not a positive integer added).", expr->formula);
-              expr->value = UNDEF;
-              value_free (left);
-              left = UNDEF;
+                                  "'%s': Operation not allowed (%s is not a positive integer or a string).",
+                                  expr->formula, value_to_string (right));
+              formula_unset (expr);
+              value_free (&left);
             }
           }
           else if (IS_NUMBER (left) && IS_NUMBER (right))
@@ -1532,29 +2018,37 @@ parse_expression (formula_t * const expr)
             GET_NUMBER (left) += GET_INTEGER (right);
           else if (IS_INTEGER (left) && IS_NUMBER (right))
           {
-            value_free (left);
+            value_free (&left);
             GET_NUMBER (left) = GET_INTEGER (left) + GET_NUMBER (right);
             left.type = NUMBER;
           }
           else if (IS_INTEGER (left) && IS_INTEGER (right))
-            GET_INTEGER (left) += GET_INTEGER (right);
+          {
+            if (INT_ADD_OVERFLOW (GET_INTEGER (left), GET_INTEGER (right)))
+            {
+              formula_on_message (expr->engine->name, expr->formula, MSG_WARNING, 0, "'%s': Out of range (%li+%li).",
+                                  expr->formula, GET_INTEGER (left), GET_INTEGER (right));
+              formula_unset (expr);
+              value_free (&left);
+            }
+            else
+              GET_INTEGER (left) += GET_INTEGER (right);
+          }
           else if (IS_DATE_TIME (left) && IS_INTEGER (right))
+            //TODO: check overflow
             tm_addseconds (&GET_DATE_TIME (left), 24 * 60 * 60 * GET_INTEGER (right));
           else
           {
             formula_on_message (expr->engine->name, expr->formula, MSG_WARNING, 0, "'%s': Operation not allowed.",
                                 expr->formula);
-            expr->value = UNDEF;
-            value_free (left);
-            left = UNDEF;
+            formula_unset (expr);
+            value_free (&left);
           }
         }
         else if (IS_VALUED (left))
-        {
-          value_free (left);
-          left = UNDEF;
-        }
-        value_free (right);
+          value_free (&left);
+
+        value_free (&right);
         break;
       }
       case MINUS:
@@ -1573,38 +2067,45 @@ parse_expression (formula_t * const expr)
             GET_NUMBER (left) -= GET_INTEGER (right);
           else if (IS_INTEGER (left) && IS_NUMBER (right))
           {
-            value_free (left);
+            value_free (&left);
             GET_NUMBER (left) = GET_INTEGER (left) - GET_NUMBER (right);
             left.type = NUMBER;
           }
           else if (IS_INTEGER (left) && IS_INTEGER (right))
-            GET_INTEGER (left) -= GET_INTEGER (right);
+          {
+            if (INT_SUBTRACT_OVERFLOW (GET_INTEGER (left), GET_INTEGER (right)))
+            {
+              formula_on_message (expr->engine->name, expr->formula, MSG_WARNING, 0, "'%s': Out of range (%li-%li).",
+                                  expr->formula, GET_INTEGER (left), GET_INTEGER (right));
+              formula_unset (expr);
+              value_free (&left);
+            }
+            else
+              GET_INTEGER (left) -= GET_INTEGER (right);
+          }
           else
           {
             formula_on_message (expr->engine->name, expr->formula, MSG_WARNING, 0, "'%s': Operation not allowed.",
                                 expr->formula);
-            expr->value = UNDEF;
-            value_free (left);
-            left = UNDEF;
+            formula_unset (expr);
+            value_free (&left);
           }
         }
         else if (IS_VALUED (left))
-        {
-          value_free (left);
-          left = UNDEF;
-        }
-        value_free (right);
+          value_free (&left);
+
+        value_free (&right);
         break;
       }
       case NONE:
-        value_free (left);
+        value_free (&left);
         return UNDEF;
         break;
       case VALUE:
-        value_free (token.attribute.value);
+        value_free (&token.attribute.value);
         /* no break, fall through */
       default:
-        unget_token (expr);
+        token_unget (expr);
         return left;
         break;
     }
@@ -1617,15 +2118,16 @@ parse_comparison (formula_t * const expr)
 {
   value_t left = parse_expression (expr);
 
-  if (!expr || !expr->pos)
+  if (!expr || !formula_isvalid (expr))
   {
-    value_free (left);
+    formula_unset (expr);
+    value_free (&left);
     return UNDEF;
   }
 
   value_t ret = ZERO;
 
-  token_t token = get_token (expr);
+  token_t token = token_get (expr);
 
   switch (token.type)
   {
@@ -1651,13 +2153,15 @@ parse_comparison (formula_t * const expr)
         {
           formula_on_message (expr->engine->name, expr->formula, MSG_WARNING, 0, "'%s': Operation not allowed.",
                               expr->formula);
-          ret = expr->value = UNDEF;
+          formula_unset (expr);
+          value_free (&ret);
         }
       }
       else
-        ret = UNDEF;
-      value_free (right);
-      value_free (left);
+        value_free (&ret);
+
+      value_free (&right);
+      value_free (&left);
       break;
     }
     case GT:
@@ -1682,13 +2186,15 @@ parse_comparison (formula_t * const expr)
         {
           formula_on_message (expr->engine->name, expr->formula, MSG_WARNING, 0, "'%s': Operation not allowed.",
                               expr->formula);
-          ret = expr->value = UNDEF;
+          formula_unset (expr);
+          value_free (&ret);
         }
       }
       else
-        ret = UNDEF;
-      value_free (right);
-      value_free (left);
+        value_free (&ret);
+
+      value_free (&right);
+      value_free (&left);
       break;
     }
     case EQ:
@@ -1713,13 +2219,15 @@ parse_comparison (formula_t * const expr)
         {
           formula_on_message (expr->engine->name, expr->formula, MSG_WARNING, 0, "'%s': Operation not allowed.",
                               expr->formula);
-          ret = expr->value = UNDEF;
+          formula_unset (expr);
+          value_free (&ret);
         }
       }
       else
-        ret = UNDEF;
-      value_free (right);
-      value_free (left);
+        value_free (&ret);
+
+      value_free (&right);
+      value_free (&left);
       break;
     }
 
@@ -1745,13 +2253,15 @@ parse_comparison (formula_t * const expr)
         {
           formula_on_message (expr->engine->name, expr->formula, MSG_WARNING, 0, "'%s': Operation not allowed.",
                               expr->formula);
-          ret = expr->value = UNDEF;
+          formula_unset (expr);
+          value_free (&ret);
         }
       }
       else
-        ret = UNDEF;
-      value_free (right);
-      value_free (left);
+        value_free (&ret);
+
+      value_free (&right);
+      value_free (&left);
       break;
     }
     case GE:
@@ -1776,13 +2286,15 @@ parse_comparison (formula_t * const expr)
         {
           formula_on_message (expr->engine->name, expr->formula, MSG_WARNING, 0, "'%s': Operation not allowed.",
                               expr->formula);
-          ret = expr->value = UNDEF;
+          formula_unset (expr);
+          value_free (&ret);
         }
       }
       else
-        ret = UNDEF;
-      value_free (right);
-      value_free (left);
+        value_free (&ret);
+
+      value_free (&right);
+      value_free (&left);
       break;
     }
     case NEQ:
@@ -1807,378 +2319,41 @@ parse_comparison (formula_t * const expr)
         {
           formula_on_message (expr->engine->name, expr->formula, MSG_WARNING, 0, "'%s': Operation not allowed.",
                               expr->formula);
-          ret = expr->value = UNDEF;
+          formula_unset (expr);
+          value_free (&ret);
         }
       }
       else
-        ret = UNDEF;
-      value_free (right);
-      value_free (left);
+        value_free (&ret);
+
+      value_free (&right);
+      value_free (&left);
       break;
     }
 
     case NONE:
-      value_free (left);
+      value_free (&left);
       break;
     case VALUE:
-      value_free (token.attribute.value);
+      value_free (&token.attribute.value);
       /* no break, drops through */
     default:
-      unget_token (expr);
+      token_unget (expr);
       ret = left;
       break;
   }
 
+  if (!IS_VALUED (ret))
+    formula_unset (expr);
+
   return ret;
-}
-
-/**************************************************************
-*                      FORMULAE MANAGER                       *
-**************************************************************/
-static formula_t *
-formula_allocate (const char *variable_name, const char *formula_string)
-{
-  formula_t *expr = malloc (sizeof (*expr));
-
-  CHECK_ALLOC (expr);
-
-  expr->variable_name = mystrdup (variable_name);
-  expr->formula = mystrdup (formula_string);
-  expr->dependencies = 0;
-  expr->alerts = 0;
-  expr->pos = expr->formula;
-  expr->value = UNDEF;
-  expr->notify_change = 0;
-  expr->engine = 0;
-  expr->next = 0;
-  expr->min_range = 0;
-  expr->max_range = 0;
-  expr->circular_dependencies = 0;
-
-  return expr;
-}
-
-static void
-formula_free (formula_t * expr, int reparse)
-{
-  // argument "reparse" : if reparse, prepare formula for reparsing : free data before update
-  // formula_free(expr, 0) can be called to remove formula 'expr' from engine it belongs to.
-
-  if (!expr)
-    return;
-
-  if (IS_VALUED (expr->value))
-    value_free (expr->value);   // 'polymorphic' free value
-  expr->value = UNDEF;
-
-  dependency_t *ndep;
-
-  for (dependency_t * dep = expr->dependencies; dep; dep = ndep)
-  {
-    ndep = dep->next;
-    free (dep->variable_name);
-    free (dep);
-  }
-  expr->dependencies = 0;
-  expr->circular_dependencies = 0;
-
-  if (!reparse)
-  {
-    if (expr->variable_name)
-      free (expr->variable_name);
-    expr->variable_name = 0;
-
-    if (expr->formula)
-      free (expr->formula);
-    expr->formula = 0;
-
-    if (expr->min_range)
-      free (expr->min_range);
-    if (expr->max_range)
-      free (expr->max_range);
-    expr->min_range = expr->max_range = 0;
-
-    alert_t *nal;
-
-    for (alert_t * al = expr->alerts; al; al = nal)
-    {
-      nal = al->next;
-      if (al->message)
-        free (al->message);
-      free (al);
-    }
-
-    if (expr->engine && expr->engine->formulae)
-    {
-      // Remove formula 'expr' from engine
-      formula_t *form = expr->engine->formulae; // 1st formula in the list
-
-      if (form == expr)
-        expr->engine->formulae = expr->next;
-      else
-        while (form->next)
-          if (form->next == expr)
-            form->next = expr->next;
-          else
-            form = form->next;
-    }
-
-    expr->next = 0;
-    expr->engine = 0;
-
-    free (expr);
-  }
-}
-
-static int formula_parse (formula_t * const expr);
-
-static int
-formula_get (formula_t * const form, value_t * const value)
-{
-  if (!IS_VALUED (form->value))
-  {
-    formula_on_message (form->engine->name, form->formula, MSG_WARNING, 0, "'%s': Not valued yet.", form->formula);
-    return 0;
-  }
-
-  // Updates value of formula
-  int automatic = form->engine->automatic_calculation;
-
-  form->engine->automatic_calculation = 1;
-  ASSERT ((formula_parse (form)), 0);
-  form->engine->automatic_calculation = automatic;
-
-  if (value)
-    *value = form->value;
-
-  return 1;
-}
-
-static int
-formula_depends_on (formula_t * const form, const char *variable)
-{
-  if (!variable || !form || !form->engine)
-    return 0;
-
-  for (dependency_t * dep = form->dependencies; dep; dep = dep->next)
-  {
-    if (!strcmp (dep->variable_name, variable))
-      return 1;
-
-    formula_t *f;
-
-    for (f = form->engine->formulae; f && (strcmp (f->variable_name, dep->variable_name)); f = f->next)
-      /* nothing */ ;
-
-    if (f && (f == form || f->circular_dependencies || formula_depends_on (f, variable)))
-      return 1;
-  }
-
-  return 0;
-}
-
-/***************************************************************************
-* When a variable is changed, all variables refering to it are re-computed *
-*                                                                          *
-* Recursive scheme:                                                        *
-*                                                                          *
-*       (formula) ----> formula_parse = UNDEF? --(No)--> formula_set       *
-*                          ^               |                |              *
-*                          |             (Yes)              |              *
-*                          |               |                |              *
-*                          |               v                |              *
-*                      (parents) <---- formula_changed <----'              *
-*                                                                          *
-***************************************************************************/
-
-static void
-formula_changed (formula_t * const expr)
-{
-  if (!expr || !expr->engine || !expr->variable_name)
-    return;
-
-  // Recalculate all formulae which depend on expr
-  if (IS_VALUED (expr->value))
-  {
-    if (expr->notify_change && !expr->engine->quiet)
-      formula_on_change (expr->engine->name, expr->variable_name, expr->value);
-
-    if (IS_NUMBER (expr->value))
-      for (alert_t * al = expr->alerts; al; al = al->next)
-        if (al->min_value <= GET_NUMBER (expr->value)
-            && (GET_NUMBER (expr->value) <= al->max_value || al->max_value < al->min_value))
-          formula_on_message (expr->engine->name, expr->variable_name, MSG_INFO, 0, al->message);
-  }
-  else if (expr->notify_change && !expr->engine->quiet)
-    formula_on_change (expr->engine->name, expr->variable_name, UNDEF); // quiet NaN is implementation dependent
-
-  if (expr->engine->automatic_calculation)
-    for (formula_t * form = expr->engine->formulae; form; form = form->next)
-      if (form != expr)
-        for (dependency_t * dep = form->dependencies; dep; dep = dep->next)
-          if (!strcmp (dep->variable_name, expr->variable_name))
-          {
-            //if (expr->engine->automatic_notification)
-            //expr->notify_change = 0 ;  // notify only leafs changes
-
-            if (IS_VALUED (expr->value) || IS_VALUED (form->value))
-              ASSERT ((formula_parse (form)), 0);       // The recursive stuff is here
-            break;
-          }
-}
-
-static int
-formula_set (formula_t * const form, value_t value)
-{
-  if (IS_NUMBER (value) && form->min_range && GET_NUMBER (value) < *form->min_range)
-  {
-    formula_on_message (form->engine->name, form->variable_name, MSG_WARNING, 0, "'%s': Out of range (< %g).",
-                        form->formula, *form->min_range);
-    value_free (form->value);
-    form->value = UNDEF;
-  }
-  else if (IS_NUMBER (value) && form->max_range && GET_NUMBER (value) > *form->max_range)
-  {
-    formula_on_message (form->engine->name, form->variable_name, MSG_WARNING, 0, "'%s': Out of range (> %g).",
-                        form->formula, *form->max_range);
-    value_free (form->value);
-    form->value = UNDEF;
-  }
-  else                          //if (value != form->value)
-  {
-    value = value_dup (value);
-    value_free (form->value);
-    form->value = value;
-  }
-
-  formula_changed (form);
-
-  return !IS_VALUED (value) || IS_VALUED (form->value);
-}
-
-/* Parser entry point */
-static int
-formula_parse (formula_t * const expr)
-{
-  if (!expr)
-    return 0;
-
-  if (!expr->formula)           // if formula is reduced to 0 (that is the case after identifier_set has been called)
-    /* nothing */ ;
-  else                          // if (expr->formula)
-  {
-    formula_free (expr, 1);     // prepare formula for reparsing : free data before update
-    expr->pos = expr->formula;
-    expr->value = ZERO;         // Initialize value before calling parse_comparison.
-    expr->value = parse_comparison (expr);
-
-    token_t token = get_token (expr);
-
-    if (token.type != END)
-    {
-      switch (token.type)
-      {
-        case IDENTIFIER:
-          formula_on_message (expr->engine->name, expr->formula, MSG_ERROR, 0,
-                              "'%s': Unexpected identifier uncountered.", expr->formula);
-          break;
-        case VALUE:
-          value_free (token.attribute.value);
-          formula_on_message (expr->engine->name, expr->formula, MSG_ERROR, 0, "'%s': Unexpected value uncountered.",
-                              expr->formula);
-          break;
-        case PLUS:
-        case MINUS:
-        case MULTIPLY:
-        case DIVIDE:
-        case EQ:
-        case LHPAREN:
-        case RHPAREN:
-        case LHBRACKET:
-        case RHBRACKET:
-        case ARG_SEP:
-        case LT:
-        case GT:
-          formula_on_message (expr->engine->name, expr->variable_name, MSG_ERROR, 0,
-                              "'%s': Unexpected '%c' uncountered.", expr->formula, token.type);
-          break;
-        default:
-          formula_on_message (expr->engine->name, expr->variable_name, MSG_ERROR, 0,
-                              "'%s': Unexpected end of formula uncountered.", expr->formula);
-          break;
-      }
-      formula_on_message (expr->engine->name, expr->variable_name, MSG_ERROR, 0, "'%s': At '%s'.", expr->formula,
-                          expr->previous_pos);
-      //formula_free(expr, 1) ;
-      return 0;                 // Formula end expected. The formula is not added to the engine.
-    }                           // token.type != END
-
-    if (expr->variable_name && formula_depends_on (expr, expr->variable_name))
-    {
-      expr->circular_dependencies = 1;
-      formula_on_message (expr->engine->name, expr->variable_name, MSG_WARNING, 0, "'%s': Circular reference.",
-                          expr->formula);
-      if (IS_VALUED (expr->value))
-      {
-        value_free (expr->value);
-        expr->value = UNDEF;
-      }
-    }
-  }
-
-  /* Adding the formula to the engine */
-  if (expr->engine && expr->variable_name)
-  {
-    // Add the formula in the engine
-    formula_t *form = 0;
-
-    for (form = expr->engine->formulae; form && form != expr; form = form->next)
-      /* nothing */ ;
-
-    if (!form)                  // the formula is not in the engine list yet
-    {
-      formula_t *previous = 0;
-
-      for (form = expr->engine->formulae; form && strcmp (form->variable_name, expr->variable_name); form = form->next)
-        previous = form;
-
-      if (form)
-      {
-        // The engine already contains another formula with the same variable name -> it is replaced by the new one.
-        // Replace 'form' by 'expr' in the list 'expr->engine->formulae' (type formula_t).
-        if (form->dependencies)
-          formula_on_message (form->engine->name, form->variable_name, MSG_WARNING, 0, "'%s': Overwritten !",
-                              form->formula);
-        expr->next = form->next;
-        if (previous)
-          previous->next = expr;
-        else
-          expr->engine->formulae = expr;
-
-        formula_free (form, 0); // 'form is not needed anymore
-      }
-      else
-      {
-        // Adding the formula at the beginning of the list 'expr->engine->formulae' (type formula_t).
-        expr->next = expr->engine->formulae;
-        expr->engine->formulae = expr;
-      }
-    }
-  }
-
-  if (IS_VALUED (expr->value))  // Avoids recursive infinite loop with formula_parse
-    formula_set (expr, expr->value);
-  else                          // UNDEF
-    formula_changed (expr);     // The recursive stuff is here
-
-  return 1;
 }
 
 /**************************************************************
 *                      PREDEFINED FUNCTIONS                   *
 **************************************************************/
 static double
-myrandom ()
+_f_random ()
 {
   static int myrandomisinit = 0;
   static struct drand48_data buffer;
@@ -2196,19 +2371,19 @@ myrandom ()
 }
 
 static double
-not (double x)
+_f_not (double x)
 {
   return (x ? 0. : 1.);
 }
 
 static double
-sqr (double x)
+_f_sqr (double x)
 {
   return x * x;
 }
 
 static value_t
-max (int nbArgs, const value_t * const args)
+_f_max (int nbArgs, const value_t * const args)
 {
   if (!nbArgs)
     return UNDEF;
@@ -2260,7 +2435,7 @@ max (int nbArgs, const value_t * const args)
 }
 
 static value_t
-min (int nbArgs, const value_t * const args)
+_f_min (int nbArgs, const value_t * const args)
 {
   if (!nbArgs)
     return UNDEF;
@@ -2312,7 +2487,7 @@ min (int nbArgs, const value_t * const args)
 }
 
 static value_t
-and (int nbArgs, const value_t * const args)
+_f_and (int nbArgs, const value_t * const args)
 {
   if (nbArgs < 2)
   {
@@ -2338,7 +2513,7 @@ and (int nbArgs, const value_t * const args)
 }
 
 static value_t
-or (int nbArgs, const value_t * const args)
+_f_or (int nbArgs, const value_t * const args)
 {
   if (nbArgs < 2)
   {
@@ -2359,7 +2534,7 @@ or (int nbArgs, const value_t * const args)
 }
 
 static value_t
-iiff (int nbArgs, const value_t * const args)
+_f_iiff (int nbArgs, const value_t * const args)
 {
   if (nbArgs != 3)
   {
@@ -2376,7 +2551,7 @@ iiff (int nbArgs, const value_t * const args)
 }
 
 static value_t
-sum (int nbArgs, const value_t * const args)
+_f_sum (int nbArgs, const value_t * const args)
 {
   for (int i = 1; i < nbArgs; i++)
     if (args[0].type != args[i].type)
@@ -2422,7 +2597,7 @@ sum (int nbArgs, const value_t * const args)
 }
 
 static value_t
-to_number (int nbArgs, const value_t * const args)
+_f_to_number (int nbArgs, const value_t * const args)
 {
   if (nbArgs < 1 || !IS_STRING (args[0]))
     return UNDEF;
@@ -2444,7 +2619,7 @@ to_number (int nbArgs, const value_t * const args)
 }
 
 static value_t
-round_number (int nbArgs, const value_t * const args)
+_f_round_number (int nbArgs, const value_t * const args)
 {
   if (nbArgs != 1)
     return UNDEF;
@@ -2458,7 +2633,7 @@ round_number (int nbArgs, const value_t * const args)
 }
 
 static value_t
-diff_dates (int nbArgs, const value_t * const args)
+_f_diff_dates (int nbArgs, const value_t * const args)
 {
   if (nbArgs < 2 || nbArgs > 3 || !IS_DATE_TIME (args[0]) || !IS_DATE_TIME (args[1]))
     return UNDEF;
@@ -2498,7 +2673,7 @@ diff_dates (int nbArgs, const value_t * const args)
 }
 
 static value_t
-date_add (int nbArgs, const value_t * const args)
+_f_date_add (int nbArgs, const value_t * const args)
 {
   if (nbArgs < 2 || nbArgs > 3 || !IS_DATE_TIME (args[0]) || !IS_INTEGER (args[1]))
     return UNDEF;
@@ -2541,7 +2716,7 @@ date_add (int nbArgs, const value_t * const args)
 }
 
 static value_t
-date_attribute (int nbArgs, const value_t * const args)
+_f_date_attribute (int nbArgs, const value_t * const args)
 {
   if (nbArgs != 2 || !IS_DATE_TIME (args[0]) || !IS_STRING (args[1]))
     return UNDEF;
@@ -2575,7 +2750,7 @@ date_attribute (int nbArgs, const value_t * const args)
 }
 
 static value_t
-date (int nbArgs, const value_t * const args)
+_f_date (int nbArgs, const value_t * const args)
 {
   if (nbArgs != 6)
     return UNDEF;
@@ -2592,7 +2767,7 @@ date (int nbArgs, const value_t * const args)
 }
 
 static value_t
-to_string (int nbArgs, const value_t * const args)
+_f_to_string (int nbArgs, const value_t * const args)
 {
   // Arguments :
   //   - 1st: value to convert to string (compulsory, number or string)
@@ -2687,7 +2862,7 @@ to_string (int nbArgs, const value_t * const args)
 }
 
 static value_t
-now (int nbArgs, const value_t * const args)
+_f_now (int nbArgs, const value_t * const args)
 {
   if (nbArgs)
     return UNDEF;
@@ -2700,7 +2875,7 @@ now (int nbArgs, const value_t * const args)
 }
 
 static value_t
-today (int nbArgs, const value_t * const args)
+_f_today (int nbArgs, const value_t * const args)
 {
   if (nbArgs)
     return UNDEF;
@@ -2714,7 +2889,6 @@ today (int nbArgs, const value_t * const args)
 
 // TODO: LOOP i=i..j..k <id(i)> = formula(i)>
 // TODO: identifier=search(i=1..3..19;<condition(i)>;<expression(i)>)
-// TODO: args(i=i..j..k ; <formula(i)>), returns a list of value_t
 
 /**************************************************************
 *                      ENGINES MANAGER                        *
@@ -3258,14 +3432,14 @@ identifier_print (const char *engine_name, const char *identifier, int nbtabs, i
     char message[50] = "";
 
     if (IS_STRING (form->value) || IS_DATE_TIME (form->value) || IS_INTEGER (form->value)
-        || (!form->min_range && !form->max_range))
+        || (!IS_NUMBER (form->min_range) && !IS_NUMBER (form->max_range)))
       /* nothing */ ;
-    else if (form->min_range && !form->max_range)
-      snprintf (base_format, 50, " [%g;[", *form->min_range);
-    else if (!form->min_range && form->max_range)
-      snprintf (base_format, 50, " ];%g]", *form->max_range);
-    else if (form->min_range && form->max_range)
-      snprintf (base_format, 50, " [%g;%g]", *form->min_range, *form->max_range);
+    else if (IS_NUMBER (form->min_range) && !IS_NUMBER (form->max_range))
+      snprintf (base_format, 50, " [%g;[", GET_NUMBER (form->min_range));
+    else if (!IS_NUMBER (form->min_range) && IS_NUMBER (form->max_range))
+      snprintf (base_format, 50, " ];%g]", GET_NUMBER (form->max_range));
+    else if (IS_NUMBER (form->min_range) && IS_NUMBER (form->max_range))
+      snprintf (base_format, 50, " [%g;%g]", GET_NUMBER (form->min_range), GET_NUMBER (form->max_range));
 
     if (!print_values)
       snprintf (message, 50, "%s%%s%%s", base_format);
@@ -3344,7 +3518,7 @@ noecho (const char *line)
 }
 
 static int
-read_command_line (const char *engine_name, char *command_line)
+engine_read_command_line (const char *engine_name, char *command_line)
 {
   if (!command_line)
     return 1;
@@ -3374,7 +3548,7 @@ read_command_line (const char *engine_name, char *command_line)
 
         if (arg1)
         {
-          engine_inject_command_file (engine_name, next_arg (command_line), 0, 0);
+          engine_read_command_file (engine_name, next_arg (command_line), 0, 0);
           return 1;
         }
         else
@@ -3426,7 +3600,7 @@ read_command_line (const char *engine_name, char *command_line)
         form->engine = engine;
         *end_arg (arg1) = 0;
         if (formula_parse (form) && IS_VALUED (form->value))
-          identifier_set (engine_name, arg1, form->value);      //identifier_set(engine_name, arg1, value_dup(form->value)) ;
+          identifier_set (engine_name, arg1, value_dup (form->value));  //identifier_set(engine_name, arg1, value_dup(form->value)) ;
         else
           formula_on_message (engine_name, arg2, MSG_ERROR, 0, "Undefined value.");
         formula_free (form, 0); // 'form' is not needed anymore, form was not added to 'engine' (no_id=1 passed to formula_parse)
@@ -3558,7 +3732,7 @@ read_command_line (const char *engine_name, char *command_line)
           formula_on_message (engine_name, command_line, MSG_ERROR, 0, "Invalid argument %s.", arg3);
           return 0;
         }
-        return identifier_alert_add (engine_name, arg1, GET_NUMBER (min), GET_NUMBER (max), arg4);
+        return identifier_alert_add (engine_name, arg1, min, max, arg4);
       }
       else if (!strcmp (command, "DELETE"))
       {
@@ -3659,7 +3833,7 @@ engine_open (const char *engine_name)
   engine_add_constant (engine_name, "true", 1);
   engine_add_constant (engine_name, "false", 0);
 
-  engine_add_f0arg (engine_name, "ran", myrandom);
+  engine_add_f0arg (engine_name, "ran", _f_random);
 
   engine_add_f1arg (engine_name, "sin", sin);
   engine_add_f1arg (engine_name, "cos", cos);
@@ -3675,7 +3849,7 @@ engine_open (const char *engine_name)
   engine_add_f1arg (engine_name, "atanh", atanh);
   engine_add_f1arg (engine_name, "abs", fabs);
   engine_add_f1arg (engine_name, "sqrt", sqrt);
-  engine_add_f1arg (engine_name, "sqr", sqr);
+  engine_add_f1arg (engine_name, "sqr", _f_sqr);
   engine_add_f1arg (engine_name, "round", round);
   engine_add_f1arg (engine_name, "trunc", trunc);
   engine_add_f1arg (engine_name, "rint", rint);
@@ -3684,54 +3858,54 @@ engine_open (const char *engine_name)
   engine_add_f1arg (engine_name, "exp", exp);
   engine_add_f1arg (engine_name, "log", log);
   engine_add_f1arg (engine_name, "log10", log10);
-  engine_add_f1arg (engine_name, "not", not);
+  engine_add_f1arg (engine_name, "not", _f_not);
 
   engine_add_f2args (engine_name, "mod", fmod);
   engine_add_f2args (engine_name, "pow", pow);
 
-  engine_add_fnargs (engine_name, "min", min);
+  engine_add_fnargs (engine_name, "min", _f_min);
   engine_fnargs_set_nb_args (engine_name, "min", 1, 0);
 
-  engine_add_fnargs (engine_name, "max", max);
+  engine_add_fnargs (engine_name, "max", _f_max);
   engine_fnargs_set_nb_args (engine_name, "max", 1, 0);
 
-  engine_add_fnargs (engine_name, "if", iiff);
+  engine_add_fnargs (engine_name, "if", _f_iiff);
   engine_fnargs_set_nb_args (engine_name, "if", 3, 3);
 
-  engine_add_fnargs (engine_name, "and", and);
+  engine_add_fnargs (engine_name, "and", _f_and);
   engine_fnargs_set_nb_args (engine_name, "and", 2, 0);
 
-  engine_add_fnargs (engine_name, "or", or);
+  engine_add_fnargs (engine_name, "or", _f_or);
   engine_fnargs_set_nb_args (engine_name, "or", 2, 0);
 
-  engine_add_fnargs (engine_name, "sum", sum);
+  engine_add_fnargs (engine_name, "sum", _f_sum);
   engine_fnargs_set_nb_args (engine_name, "sum", 2, 0);
 
-  engine_add_fnargs (engine_name, "to_number", to_number);
+  engine_add_fnargs (engine_name, "to_number", _f_to_number);
   engine_fnargs_set_nb_args (engine_name, "to_number", 1, 1);
 
-  engine_add_fnargs (engine_name, "round", round_number);
+  engine_add_fnargs (engine_name, "round", _f_round_number);
   engine_fnargs_set_nb_args (engine_name, "round", 1, 1);
 
-  engine_add_fnargs (engine_name, "diff_dates", diff_dates);
+  engine_add_fnargs (engine_name, "diff_dates", _f_diff_dates);
   engine_fnargs_set_nb_args (engine_name, "diff_dates", 2, 3);
 
-  engine_add_fnargs (engine_name, "add_to_date", date_add);
-  engine_fnargs_set_nb_args (engine_name, "add_dates", 2, 3);
+  engine_add_fnargs (engine_name, "add_to_date", _f_date_add);
+  engine_fnargs_set_nb_args (engine_name, "add_to_date", 2, 3);
 
-  engine_add_fnargs (engine_name, "date_attribute", date_attribute);
-  engine_fnargs_set_nb_args (engine_name, "get_date", 2, 2);
+  engine_add_fnargs (engine_name, "date_attribute", _f_date_attribute);
+  engine_fnargs_set_nb_args (engine_name, "date_attribute", 2, 2);
 
-  engine_add_fnargs (engine_name, "date", date);
+  engine_add_fnargs (engine_name, "date", _f_date);
   engine_fnargs_set_nb_args (engine_name, "date", 6, 6);
 
-  engine_add_fnargs (engine_name, "to_string", to_string);
+  engine_add_fnargs (engine_name, "to_string", _f_to_string);
   engine_fnargs_set_nb_args (engine_name, "to_string", 1, 5);
 
-  engine_add_fnargs (engine_name, "now", now);
+  engine_add_fnargs (engine_name, "now", _f_now);
   engine_fnargs_set_nb_args (engine_name, "now", 0, 1);
 
-  engine_add_fnargs (engine_name, "today", today);
+  engine_add_fnargs (engine_name, "today", _f_today);
   engine_fnargs_set_nb_args (engine_name, "today", 0, 1);
 
   // Add functions
@@ -3752,10 +3926,10 @@ engine_close (const char *engine_name)
   if (!engine)                  // unknown engine
     return;
 
-  free (engine->name);
-
   while (engine->formulae)
     formula_free (engine->formulae, 0);
+
+  free (engine->name);
 
   /*
      formula_t *fnext = 0 ;
@@ -4390,7 +4564,7 @@ engine_next_library (const char *engine_name, char *name)
 static int
 internal_engine_add_symbol (const char *engine_name, const char *symbol_name, symbol_type type, library_t * lib)
 {
-  for ( /**/; lib; lib = lib->next)
+  for ( /* nothing */ ; lib; lib = lib->next)
   {
     dlerror ();                 /* Clear any existing error */
     void *symbol = dlsym (lib->handler, symbol_name);
@@ -4546,7 +4720,7 @@ engine_remove_formula (const char *engine_name, const char *formula)
 
   if (form)
   {
-    formula_set (form, UNDEF);
+    formula_unset (form);
     formula_free (form, 0);
     return 1;
   }
@@ -4590,7 +4764,7 @@ engine_next_formula (const char *engine_name, char *name)
 /*********************************************************************/
 
 int
-engine_inject_command_FILE (const char *engine_name, FILE * f, prompt_handler prompt, echo_handler echo)
+engine_read_command_FILE (const char *engine_name, FILE * f, prompt_handler prompt, echo_handler echo)
 {
   if (!f)
     return 0;
@@ -4603,7 +4777,7 @@ engine_inject_command_FILE (const char *engine_name, FILE * f, prompt_handler pr
   char *line = 0;
 
   while (prompt (), mygetline (f, &line), echo (line), line)
-    if (!read_command_line (engine_name, line))
+    if (!engine_read_command_line (engine_name, line))
       formula_on_message (engine_name, line, MSG_ERROR, 0, "Invalid command line.");
 
   free (line);
@@ -4613,7 +4787,7 @@ engine_inject_command_FILE (const char *engine_name, FILE * f, prompt_handler pr
 /*********************************************************************/
 
 int
-engine_inject_command_file (const char *engine_name, const char *filename, prompt_handler prompt, echo_handler echo)
+engine_read_command_file (const char *engine_name, const char *filename, prompt_handler prompt, echo_handler echo)
 {
   FILE *f = fopen (filename, "r");
 
@@ -4623,7 +4797,7 @@ engine_inject_command_file (const char *engine_name, const char *filename, promp
     return 0;
   }
 
-  int ret = engine_inject_command_FILE (engine_name, f, prompt, echo);
+  int ret = engine_read_command_FILE (engine_name, f, prompt, echo);
 
   fclose (f);
   return ret;
@@ -4691,7 +4865,7 @@ engine_read_file_description (const char *engine_name, const char *filename, int
             engine_fnargs_set_nb_args (engine_name, arg, min, max);
           break;
         case COMMAND_ACTION:
-          if (arg && !read_command_line (engine_name, arg))
+          if (arg && !engine_read_command_line (engine_name, arg))
             formula_on_message (engine_name, arg, MSG_ERROR, 0, "Invalid command line.");
           break;
         case LIBRARY_ACTION:
@@ -4754,7 +4928,7 @@ engine_read_file_description (const char *engine_name, const char *filename, int
           }
           break;
         case COMMAND_ACTION:
-          if (!strcmp ("command", confvar) && !read_command_line (engine_name, confval))
+          if (!strcmp ("command", confvar) && !engine_read_command_line (engine_name, confval))
             formula_on_message (engine_name, confval, MSG_ERROR, 0, "Invalid command line.");
           break;
         case LIBRARY_ACTION:
@@ -4864,17 +5038,14 @@ identifier_get (const char *engine_name, const char *identifier, value_t * const
 /*********************************************************************/
 
 int
-identifier_set_min_range (const char *engine_name, const char *identifier, double value)
+identifier_set_min_range (const char *engine_name, const char *identifier, value_t value)
 {
   formula_t *form = engine_identifier_get (engine_name, identifier);
 
   if (form)
   {
-    if (!form->min_range)
-      form->min_range = (double *) malloc (sizeof (double));
-    CHECK_ALLOC (form->min_range);
-
-    *form->min_range = value;
+    value_free (&form->min_range);
+    form->min_range = value_dup (value);
     return 1;
   }
   else
@@ -4884,17 +5055,14 @@ identifier_set_min_range (const char *engine_name, const char *identifier, doubl
 /*********************************************************************/
 
 int
-identifier_set_max_range (const char *engine_name, const char *identifier, double value)
+identifier_set_max_range (const char *engine_name, const char *identifier, value_t value)
 {
   formula_t *form = engine_identifier_get (engine_name, identifier);
 
   if (form)
   {
-    if (!form->max_range)
-      form->max_range = (double *) malloc (sizeof (double));
-    CHECK_ALLOC (form->max_range);
-
-    *form->max_range = value;
+    value_free (&form->max_range);
+    form->max_range = value_dup (value);
     return 1;
   }
   else
@@ -4904,7 +5072,7 @@ identifier_set_max_range (const char *engine_name, const char *identifier, doubl
 /*********************************************************************/
 
 int
-identifier_alert_add (const char *engine_name, const char *identifier, double min, double max, const char *message)
+identifier_alert_add (const char *engine_name, const char *identifier, value_t min, value_t max, const char *message)
 {
   formula_t *form = engine_identifier_get (engine_name, identifier);
 
@@ -4915,8 +5083,8 @@ identifier_alert_add (const char *engine_name, const char *identifier, double mi
     CHECK_ALLOC (al);
 
     al->message = mystrdup (message);
-    al->min_value = min;
-    al->max_value = max;
+    al->min_value = value_dup (min);
+    al->max_value = value_dup (max);
     al->next = 0;
 
     if (!form->alerts)
